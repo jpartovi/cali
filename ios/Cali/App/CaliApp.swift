@@ -18,6 +18,9 @@ struct CaliApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .onOpenURL { url in
+                    CameraLaunch.shared.handle(url)
+                }
         }
     }
 }

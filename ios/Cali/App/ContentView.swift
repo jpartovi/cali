@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = AuthViewModel()
+    @ObservedObject private var cameraLaunch = CameraLaunch.shared
     @FocusState private var focusedField: Field?
     @State private var navigationPath = NavigationPath()
     @State private var showFriendsComingSoonAlert = false
@@ -128,6 +129,17 @@ struct ContentView: View {
             }
         }
         .environmentObject(viewModel)
+        .fullScreenCover(isPresented: $cameraLaunch.showPicker) {
+            SystemCameraView {
+                cameraLaunch.showPicker = false
+            }
+            .ignoresSafeArea()
+        }
+        .alert("Camera Unavailable", isPresented: $cameraLaunch.showUnavailable) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("This device doesn't have a camera.")
+        }
         .task {
             // Restore session from Supabase on app launch
             await viewModel.restoreSessionIfNeeded()

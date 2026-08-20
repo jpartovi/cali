@@ -11,6 +11,8 @@
 		A21E88F02F1A4B0100000001 /* EventActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000003 /* EventActivityAttributes.swift */; };
 		A21E88F02F1A4B0100000002 /* EventActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000003 /* EventActivityAttributes.swift */; };
 		A21E88F02F1A4B0100000004 /* CaliWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000005 /* CaliWidgets.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		A21E88F02F1A4B0100000021 /* OpenCameraIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000020 /* OpenCameraIntent.swift */; };
+		A21E88F02F1A4B0100000022 /* OpenCameraIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000020 /* OpenCameraIntent.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -41,6 +43,7 @@
 		15E88F5B2EBFC785002FDB9B /* Cali.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Cali.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A21E88F02F1A4B0100000003 /* EventActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventActivityAttributes.swift; sourceTree = "<group>"; };
 		A21E88F02F1A4B0100000005 /* CaliWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CaliWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A21E88F02F1A4B0100000020 /* OpenCameraIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCameraIntent.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -98,6 +101,7 @@
 			isa = PBXGroup;
 			children = (
 				A21E88F02F1A4B0100000003 /* EventActivityAttributes.swift */,
+				A21E88F02F1A4B0100000020 /* OpenCameraIntent.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -214,6 +218,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A21E88F02F1A4B0100000001 /* EventActivityAttributes.swift in Sources */,
+				A21E88F02F1A4B0100000021 /* OpenCameraIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -222,6 +227,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A21E88F02F1A4B0100000002 /* EventActivityAttributes.swift in Sources */,
+				A21E88F02F1A4B0100000022 /* OpenCameraIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -369,7 +375,9 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_GoogleOAuthCallbackURL = "cali://oauth/google";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Cali uses the camera so you can take a photo from a Live Activity.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Cali needs microphone access to capture your voice requests.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Cali saves photos you take from a Live Activity to your library.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Cali uses speech recognition to transcribe your voice requests.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_SupabaseAnonKey = "";
@@ -406,7 +414,9 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_GoogleOAuthCallbackURL = "cali://oauth/google";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Cali uses the camera so you can take a photo from a Live Activity.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Cali needs microphone access to capture your voice requests.";
+				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Cali saves photos you take from a Live Activity to your library.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Cali uses speech recognition to transcribe your voice requests.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_SupabaseAnonKey = "";
@@ -453,6 +463,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.cali-inc.Cali.CaliWidgets";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) WIDGET_EXTENSION";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -481,6 +492,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.cali-inc.Cali.CaliWidgets";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) WIDGET_EXTENSION";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
