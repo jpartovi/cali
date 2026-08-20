@@ -1,0 +1,23 @@
+venv/
+.venv/
+.pytest_cache/
+.coverage
+.env
+__pycache__/
+*.pyc
+*.egg-info/
+*credentials.json
+*token.json
+
+# Xcode user-specific files
+xcuserdata/
+*.xcuserstate
+
+.DS_Store
+.langgraph_api/
+.cursor/
+
+# Timing logs (performance debugging)
+agent_timing.log
+backend_timing.log
+ios_agent_timing.log

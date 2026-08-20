@@ -1,0 +1,23 @@
+[project]
+name = "agent"
+version = "0.1.0"
+description = "Hello world LangGraph agent"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain>=1.0.5",
+    "langchain-openai>=1.0.0",
+    "langgraph>=1.0.2",
+    "langgraph-cli[inmem]>=0.4.7",
+    "langsmith>=0.4.42",
+    "httpx>=0.27.2",
+    "pydantic>=2.7.0",
+    "tzdata>=2024.1",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
