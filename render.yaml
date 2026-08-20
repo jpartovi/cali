@@ -1,0 +1,36 @@
+# Render adapter for the backend Docker image. Safe to delete if you move hosts.
+# Values with sync: false are entered in the Render Dashboard and never committed.
+services:
+  - type: web
+    name: cali-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /healthz
+    envVars:
+      - key: BACKEND_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_PATH
+        value: /api/v1/calendars/accounts/oauth/callback
+      - key: GOOGLE_OAUTH_APP_REDIRECT_URI
+        value: cali://oauth/google
+      - key: LANGGRAPH_AGENT_URL
+        sync: false
+      - key: LANGSMITH_API_KEY
+        sync: false
+      - key: LANGGRAPH_API_KEY
+        sync: false
+      - key: DEEPGRAM_API_KEY
+        sync: false
+      - key: ENABLE_TIMING_LOGGER
+        value: "false"

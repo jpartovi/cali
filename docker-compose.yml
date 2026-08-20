@@ -1,0 +1,32 @@
+# Local stand-in for the production API image. Secrets come from the repo-root .env.
+#
+#   docker compose up --build backend
+#
+# If LangGraph is running on the host (`langgraph dev`, port 2024), set:
+#   LANGGRAPH_AGENT_URL=http://host.docker.internal:2024
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      PORT: "8000"
+      BACKEND_URL: http://localhost:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
