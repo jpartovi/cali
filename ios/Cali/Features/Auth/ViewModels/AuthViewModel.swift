@@ -84,8 +84,9 @@ final class AuthViewModel: ObservableObject {
     }
 
     func verifyOTP() async {
-        let trimmedCode = self.otpCode.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedCode.isEmpty == false else {
+        guard !isLoading else { return }
+        let trimmedCode = self.otpCode.filter(\.isNumber)
+        guard trimmedCode.count >= 4 else {
             self.errorMessage = "Enter the code you received."
             logger.error("❌ Attempted to verify OTP with empty code")
             return
@@ -164,14 +165,18 @@ private extension AuthViewModel {
             try await work()
         } catch let error as AuthServiceError {
             switch error {
-            case .http(let statusCode):
-                self.errorMessage = "Request failed with status \(statusCode)."
-                logger.error("❌ HTTP error \(statusCode) during auth flow")
+            case .http(let statusCode, let detail):
+                if let detail, !detail.isEmpty {
+                    self.errorMessage = "Request failed with status \(statusCode).\n\(detail)"
+                } else {
+                    self.errorMessage = "Request failed with status \(statusCode)."
+                }
+                logger.error("❌ HTTP error \(statusCode) during auth flow: \(detail ?? "", privacy: .public)")
             case .decoding:
                 self.errorMessage = "Received unexpected response from server."
                 logger.error("❌ Decoding error during auth flow: \(String(describing: error))")
             case .network(let underlying):
-                self.errorMessage = "Network error: \(underlying.localizedDescription)"
+                self.errorMessage = "Network error: \(underlying.localizedDescription)\n\(AppConfiguration.backendURL.absoluteString)"
                 logger.error("❌ Network error during auth flow: \(underlying.localizedDescription, privacy: .public)")
             case .invalidURL:
                 self.errorMessage = "Invalid server URL."

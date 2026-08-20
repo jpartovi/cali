@@ -13,6 +13,8 @@ struct CaliApp: App {
         // Configure log suppression at app startup
         // This reduces verbose system warnings in development/Simulator builds
         LogSuppression.configure()
+        print("Cali backend URL: \(AppConfiguration.backendURL.absoluteString)")
+        print("Cali supabase URL: \(AppConfiguration.supabaseURL)")
     }
     
     var body: some Scene {

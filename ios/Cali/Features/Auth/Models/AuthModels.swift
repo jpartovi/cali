@@ -38,6 +38,6 @@ struct OTPVerifyResponse: Codable {
 enum AuthServiceError: Error {
     case invalidURL
     case network(Error)
-    case http(Int)
+    case http(Int, detail: String?)
     case decoding(Error)
 }

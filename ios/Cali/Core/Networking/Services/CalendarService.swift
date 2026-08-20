@@ -26,7 +26,7 @@ final class CalendarService: CalendarServicing {
     private let baseURL: URL
     private let urlSession: URLSession
 
-    init(baseURL: URL = CalendarService.defaultBaseURL(), urlSession: URLSession = NetworkSession.shared) {
+    init(baseURL: URL = AppConfiguration.backendURL, urlSession: URLSession = NetworkSession.shared) {
         self.baseURL = baseURL
         self.urlSession = urlSession
     }
@@ -423,13 +423,6 @@ private extension CalendarService {
             request.httpBody = Data()
         }
         return request
-    }
-
-    static func defaultBaseURL() -> URL {
-        if let override = ProcessInfo.processInfo.environment["BACKEND_URL"], let url = URL(string: override) {
-            return url
-        }
-        return URL(string: "http://localhost:8000")!
     }
 }
 

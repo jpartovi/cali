@@ -53,7 +53,7 @@
       <EnvironmentVariables>
          <EnvironmentVariable
             key = "BACKEND_URL"
-            value = "https://noon-green.vercel.app"
+            value = "https://cali-api.onrender.com"
             isEnabled = "YES">
          </EnvironmentVariable>
          <EnvironmentVariable
@@ -78,7 +78,7 @@
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "AGENT_BASE_URL"
-            value = "https://noon-green.vercel.app"
+            value = "https://cali-api.onrender.com"
             isEnabled = "YES">
          </EnvironmentVariable>
       </EnvironmentVariables>

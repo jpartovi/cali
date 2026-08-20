@@ -20,7 +20,7 @@ final class AuthService: AuthServicing {
     private let baseURL: URL
     private let urlSession: URLSession
 
-    init(baseURL: URL = AuthService.defaultBaseURL(), urlSession: URLSession = NetworkSession.shared) {
+    init(baseURL: URL = AppConfiguration.backendURL, urlSession: URLSession = NetworkSession.shared) {
         self.baseURL = baseURL
         self.urlSession = urlSession
     }
@@ -43,7 +43,7 @@ final class AuthService: AuthServicing {
 
 private extension AuthService {
     func makeRequest(path: String, payload: [String: String]) throws -> URLRequest {
-        guard let url = URL(string: path, relativeTo: baseURL) else {
+        guard let url = URL(string: path, relativeTo: baseURL)?.absoluteURL else {
             throw AuthServiceError.invalidURL
         }
 
@@ -66,14 +66,16 @@ private extension AuthService {
             let (data, response) = try await urlSession.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse else {
                 authLogger.error("❌ Non-HTTP response for \(request.url?.absoluteString ?? "<unknown>")")
-                throw AuthServiceError.http(-1)
+                throw AuthServiceError.http(-1, detail: nil)
             }
             authLogger.debug("⬅️ Response status \(httpResponse.statusCode) from \(httpResponse.url?.absoluteString ?? "<unknown>")")
             guard 200..<300 ~= httpResponse.statusCode else {
-                if let payload = String(data: data, encoding: .utf8) {
-                    authLogger.error("❌ Server returned status \(httpResponse.statusCode) with body: \(payload, privacy: .private)")
+                let payload = String(data: data, encoding: .utf8)
+                let detail = Self.serverDetail(from: data)
+                if let payload {
+                    authLogger.error("❌ Server returned status \(httpResponse.statusCode) with body: \(payload, privacy: .public)")
                 }
-                throw AuthServiceError.http(httpResponse.statusCode)
+                throw AuthServiceError.http(httpResponse.statusCode, detail: detail)
             }
 
             do {
@@ -93,11 +95,21 @@ private extension AuthService {
         }
     }
 
-    static func defaultBaseURL() -> URL {
-        if let override = ProcessInfo.processInfo.environment["BACKEND_URL"], let url = URL(string: override) {
-            return url
+    static func serverDetail(from data: Data) -> String? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let detail = json["detail"] else {
+            return String(data: data, encoding: .utf8)
         }
-        return URL(string: "http://localhost:8000")!
+        if let string = detail as? String, !string.isEmpty {
+            return string
+        }
+        if let items = detail as? [[String: Any]] {
+            let messages = items.compactMap { $0["msg"] as? String }
+            if !messages.isEmpty {
+                return messages.joined(separator: "; ")
+            }
+        }
+        return String(describing: detail)
     }
 }
 
