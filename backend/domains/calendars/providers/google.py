@@ -173,6 +173,7 @@ class GoogleCalendarHttpClient:
         *,
         access_token: str,
         params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         request_start = time.time()
         log_start("backend.google_calendar_api.request", details=f"method={method} path={path}")
@@ -181,12 +182,15 @@ class GoogleCalendarHttpClient:
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
         }
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
         network_start = time.time()
         response = await self.client.request(
             method,
             path,
             headers=headers,
             params=params,
+            json=json_body,
         )
         network_duration = time.time() - network_start
         response_size = len(response.content) if hasattr(response, 'content') else 0
@@ -198,6 +202,9 @@ class GoogleCalendarHttpClient:
                 status_code=response.status_code,
                 payload=_safe_json(response),
             )
+
+        if response.status_code == 204 or not response.content:
+            return {}
         
         parse_start = time.time()
         result = response.json()
@@ -206,7 +213,7 @@ class GoogleCalendarHttpClient:
         
         request_duration = time.time() - request_start
         log_step(f"backend.google_calendar_api.request", request_duration, details=f"status={response.status_code}")
-        return result
+        return result if isinstance(result, dict) else {}
 
     async def get_event(
         self,
@@ -266,6 +273,156 @@ class GoogleCalendarHttpClient:
         method_duration = time.time() - method_start
         log_step("backend.google_calendar_http_client.list_events", method_duration, details=f"calendar_id={calendar_id} total_events={len(events)} pages={page_num}")
         return events
+
+    async def list_events_sync(
+        self,
+        *,
+        access_token: str,
+        calendar_id: str,
+        time_min: Optional[str] = None,
+        time_max: Optional[str] = None,
+        sync_token: Optional[str] = None,
+        max_results: int = 250,
+    ) -> Dict[str, Any]:
+        """List events for bootstrap or incremental sync.
+
+        Incremental ``syncToken`` cannot be combined with time filters or orderBy.
+        Returns ``items`` and ``nextSyncToken``.
+        """
+        path = f"/calendars/{_encode_path_segment(calendar_id)}/events"
+        params: Dict[str, Any] = {"maxResults": max_results}
+        if sync_token:
+            params["syncToken"] = sync_token
+        else:
+            params["singleEvents"] = "true"
+            params["showDeleted"] = "true"
+            if time_min:
+                params["timeMin"] = time_min
+            if time_max:
+                params["timeMax"] = time_max
+            if time_min and time_max:
+                params["orderBy"] = "startTime"
+
+        events: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+        next_sync_token: Optional[str] = None
+        while True:
+            page_params = dict(params)
+            if page_token:
+                page_params["pageToken"] = page_token
+            data = await self._request(
+                "GET",
+                path,
+                access_token=access_token,
+                params=page_params,
+            )
+            items = data.get("items") or []
+            if isinstance(items, list):
+                events.extend(item for item in items if isinstance(item, dict))
+            page_token = data.get("nextPageToken")
+            next_sync_token = data.get("nextSyncToken") or next_sync_token
+            if not page_token:
+                break
+        return {"items": events, "nextSyncToken": next_sync_token}
+
+    async def list_event_instances(
+        self,
+        *,
+        access_token: str,
+        calendar_id: str,
+        event_id: str,
+        time_min: str,
+        time_max: str,
+        max_results: int = 250,
+    ) -> List[Dict[str, Any]]:
+        """List instances of a recurring event in a time window."""
+        path = (
+            f"/calendars/{_encode_path_segment(calendar_id)}"
+            f"/events/{_encode_path_segment(event_id)}/instances"
+        )
+        params: Dict[str, Any] = {
+            "timeMin": time_min,
+            "timeMax": time_max,
+            "maxResults": max_results,
+        }
+        events: List[Dict[str, Any]] = []
+        page_token: Optional[str] = None
+        while True:
+            page_params = dict(params)
+            if page_token:
+                page_params["pageToken"] = page_token
+            data = await self._request(
+                "GET",
+                path,
+                access_token=access_token,
+                params=page_params,
+            )
+            items = data.get("items") or []
+            if isinstance(items, list):
+                events.extend(item for item in items if isinstance(item, dict))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+        return events
+
+    async def watch_events(
+        self,
+        *,
+        access_token: str,
+        calendar_id: str,
+        channel_id: str,
+        address: str,
+        token: str,
+    ) -> Dict[str, Any]:
+        """Open a push-notification channel for a calendar's events."""
+        path = f"/calendars/{_encode_path_segment(calendar_id)}/events/watch"
+        return await self._request(
+            "POST",
+            path,
+            access_token=access_token,
+            json_body={
+                "id": channel_id,
+                "type": "web_hook",
+                "address": address,
+                "token": token,
+            },
+        )
+
+    async def watch_calendar_list(
+        self,
+        *,
+        access_token: str,
+        channel_id: str,
+        address: str,
+        token: str,
+    ) -> Dict[str, Any]:
+        """Open a push-notification channel for the user's calendar list."""
+        return await self._request(
+            "POST",
+            "/users/me/calendarList/watch",
+            access_token=access_token,
+            json_body={
+                "id": channel_id,
+                "type": "web_hook",
+                "address": address,
+                "token": token,
+            },
+        )
+
+    async def stop_channel(
+        self,
+        *,
+        access_token: str,
+        channel_id: str,
+        resource_id: str,
+    ) -> None:
+        """Stop a Google push-notification channel."""
+        await self._request(
+            "POST",
+            "/channels/stop",
+            access_token=access_token,
+            json_body={"id": channel_id, "resourceId": resource_id},
+        )
 
     async def list_calendars(
         self,

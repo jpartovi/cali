@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # Performance debugging
     enable_timing_logger: bool = False  # Enable detailed timing logs (default: off for production)
 
+    # Google Calendar push notifications (watch channels)
+    google_webhook_token: str | None = None
+    google_calendar_webhook_url: str | None = None
+
+    # Shared secret for Render cron → API calls
+    cron_secret: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"),  # Load from project root .env file
         env_file_encoding="utf-8",

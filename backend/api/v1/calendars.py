@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
 
 from core.dependencies import AuthenticatedUser, get_current_user, get_user_timezone
@@ -149,7 +149,9 @@ async def start_oauth(
 
 
 @router.get("/accounts/oauth/callback", include_in_schema=False)
-async def oauth_callback(state: str, code: str) -> RedirectResponse:
+async def oauth_callback(
+    state: str, code: str, background_tasks: BackgroundTasks
+) -> RedirectResponse:
     """Handle Google OAuth callback."""
     try:
         claims = decode_state_token(state)
@@ -219,6 +221,7 @@ async def oauth_callback(state: str, code: str) -> RedirectResponse:
         )
         return RedirectResponse(redirect_url, status_code=status.HTTP_303_SEE_OTHER)
 
+    background_tasks.add_task(_bootstrap_calendar_listener, user_id, account_id)
     redirect_url = build_app_redirect_url(True, state, message="linked")
     return RedirectResponse(redirect_url, status_code=status.HTTP_303_SEE_OTHER)
 
@@ -254,6 +257,9 @@ async def delete_account(
     """Delete a Google account."""
     repository = CalendarRepository()
     try:
+        from domains.calendar_listener.service import CalendarListenerService
+
+        await CalendarListenerService().stop_account(current_user.id, account_id)
         repository.delete_account(current_user.id, account_id)
     except SupabaseStorageError as exc:
         raise HTTPException(
@@ -281,6 +287,22 @@ async def update_calendar(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
+
+    if "is_hidden" in payload.model_dump(exclude_none=True):
+        try:
+            from domains.calendar_listener.service import CalendarListenerService
+
+            listener = CalendarListenerService()
+            google_calendar_id = updated.get("google_calendar_id") or ""
+            if updated.get("is_hidden"):
+                await listener.stop_calendar(current_user.id, google_calendar_id)
+            else:
+                await listener.ensure_calendar_watch(current_user.id, updated, bootstrap=True)
+        except Exception:
+            logger.exception(
+                "Failed to update calendar watches after visibility change calendar=%s",
+                calendar_id,
+            )
     
     return CalendarResponse(**updated)
 
@@ -596,3 +618,16 @@ async def get_event(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unexpected error: {str(exc)}",
         ) from exc
+
+
+async def _bootstrap_calendar_listener(user_id: str, account_id: str) -> None:
+    try:
+        from domains.calendar_listener.service import CalendarListenerService
+
+        await CalendarListenerService().bootstrap_account(user_id, account_id)
+    except Exception:
+        logger.exception(
+            "Failed to bootstrap calendar listener user=%s account=%s",
+            user_id,
+            account_id,
+        )

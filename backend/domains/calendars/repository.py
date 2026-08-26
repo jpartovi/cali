@@ -30,6 +30,33 @@ class CalendarRepository:
             raise SupabaseStorageError(exc.message) from exc
         return result.data or []
 
+    def get_account_by_id(self, user_id: str, account_id: str) -> Dict[str, Any] | None:
+        """Get a Google account by id for a user."""
+        client = get_service_client()
+        try:
+            result = (
+                client.table("google_accounts")
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("id", account_id)
+                .limit(1)
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        if not result.data:
+            return None
+        return result.data[0]
+
+    def get_all_accounts(self) -> List[Dict[str, Any]]:
+        """Get every linked Google account (service-role cron)."""
+        client = get_service_client()
+        try:
+            result = client.table("google_accounts").select("*").execute()
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return result.data or []
+
     def get_calendars(self, user_id: str, include_hidden: bool = False) -> List[Dict[str, Any]]:
         """
         Get all calendars for a user from the database.

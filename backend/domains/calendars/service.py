@@ -23,6 +23,7 @@ from domains.calendars.schemas import (
     EventTime,
     TimedEventTime,
 )
+from domains.calendar_listener.suppressions import record_self_write
 from utils.errors import (
     GoogleCalendarServiceError,
     GoogleCalendarUserError,
@@ -320,6 +321,12 @@ class CalendarService:
         }
         
         # Build response payload similar to _build_event_payload
+        record_self_write(
+            user_id,
+            calendar_id,
+            str(created_event.get("id") or ""),
+            created_event.get("etag") if isinstance(created_event.get("etag"), str) else None,
+        )
         return _build_event_payload(
             created_event,
             calendar_dict,
@@ -555,6 +562,12 @@ class CalendarService:
             "primary": supabase_calendar.get("is_primary", False),
             "accessRole": supabase_calendar.get("access_role"),
         }
+        record_self_write(
+            user_id,
+            calendar_id,
+            event_id,
+            updated_event.get("etag") if isinstance(updated_event.get("etag"), str) else None,
+        )
         return _build_event_payload(
             updated_event,
             calendar_dict,
@@ -611,6 +624,7 @@ class CalendarService:
                 raise GoogleCalendarServiceError(
                     f"Failed to delete event in Google Calendar: {str(exc)}"
                 ) from exc
+        record_self_write(user_id, calendar_id, event_id)
 
     async def _prepare_context(
         self, user_id: str
@@ -938,6 +952,17 @@ class CalendarService:
         
         # Hydrate calendars (fetch from Google and sync to Supabase)
         await self._hydrate_calendars(contexts)
+        
+        try:
+            from domains.calendar_listener.service import CalendarListenerService
+
+            listener = CalendarListenerService()
+            for context in contexts:
+                account_id = context.id
+                if account_id:
+                    await listener.bootstrap_account(user_id, account_id)
+        except Exception:
+            logger.exception("Failed to sync calendar watches after hydrate user=%s", user_id)
         
         method_duration = time_module.time() - method_start
         log_step("backend.calendar_service.hydrate_calendars", method_duration, details=f"user_id={user_id} contexts={len(contexts)}")

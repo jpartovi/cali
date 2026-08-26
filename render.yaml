@@ -34,3 +34,21 @@ services:
         sync: false
       - key: ENABLE_TIMING_LOGGER
         value: "false"
+      - key: GOOGLE_WEBHOOK_TOKEN
+        sync: false
+      - key: GOOGLE_CALENDAR_WEBHOOK_URL
+        sync: false
+      - key: CRON_SECRET
+        sync: false
+  - type: cron
+    name: cali-calendar-listener
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    schedule: "* * * * *"
+    dockerCommand: python scripts/trigger_calendar_listener.py
+    envVars:
+      - key: BACKEND_URL
+        sync: false
+      - key: CRON_SECRET
+        sync: false
