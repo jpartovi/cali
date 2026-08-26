@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     google_webhook_token: str | None = None
     google_calendar_webhook_url: str | None = None
 
+    # APNs Live Activity push
+    apns_key_p8: str | None = None
+    apns_key_id: str | None = None
+    apns_team_id: str | None = None
+    apns_bundle_id: str = "com.cali-inc.Cali"
+    apns_environment: str = "sandbox"
+
     # Shared secret for Render cron → API calls
     cron_secret: str | None = None
 

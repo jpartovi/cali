@@ -60,6 +60,7 @@ final class AuthViewModel: ObservableObject {
             // The session is valid and will be used for API calls
             self.phase = .authenticated
             logger.debug("🔁 Restored Supabase session")
+            LiveActivityPushCoordinator.shared.start()
         } catch {
             // No existing session, user needs to sign in
             logger.debug("No existing Supabase session found")
@@ -115,12 +116,14 @@ final class AuthViewModel: ObservableObject {
             self.storeSession(response)
             self.phase = .authenticated
             self.errorMessage = nil
+            LiveActivityPushCoordinator.shared.start()
             self.logger.debug("🎉 OTP verification succeeded for user \(response.user.id, privacy: .private)")
         }
     }
 
     func signOut() {
         logger.debug("🚪 Signing out current user")
+        LiveActivityPushCoordinator.shared.stopAndClearToken()
         EventLiveActivityManager.shared.endAll()
         Task {
             try? await AuthTokenProvider.shared.client.auth.signOut()

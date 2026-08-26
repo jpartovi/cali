@@ -105,6 +105,7 @@ struct AgentView: View {
             if didConfigureViewModel == false {
                 viewModel.configure(authProvider: authViewModel)
                 didConfigureViewModel = true
+                LiveActivityPushCoordinator.shared.start()
                 // Load initial windowed events centered on today
                 try? await viewModel.loadWindowedEvents(centerDate: Date())
             }
