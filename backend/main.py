@@ -19,7 +19,10 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan context manager."""
+    from domains.live_activities.service import register_live_activity_handler
+
     logger.info("Starting Cali backend API...")
+    register_live_activity_handler()
     yield
     logger.info("Shutting down Cali backend API...")
 

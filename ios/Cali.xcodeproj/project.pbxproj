@@ -370,11 +370,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Cali/Cali.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_BackendURL = "https://cali-api.onrender.com";
+				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleTypeRole = Editor;\n    CFBundleURLName = \"com.cali-inc.Cali\";\n    CFBundleURLSchemes =     (\n        cali\n    );\n}";
 				INFOPLIST_KEY_GoogleOAuthCallbackURL = "cali://oauth/google";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Cali uses the camera so you can take a photo from a Live Activity.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Cali needs microphone access to capture your voice requests.";
@@ -410,11 +412,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Cali/CaliRelease.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_BackendURL = "https://cali-api.onrender.com";
+				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleTypeRole = Editor;\n    CFBundleURLName = \"com.cali-inc.Cali\";\n    CFBundleURLSchemes =     (\n        cali\n    );\n}";
 				INFOPLIST_KEY_GoogleOAuthCallbackURL = "cali://oauth/google";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Cali uses the camera so you can take a photo from a Live Activity.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Cali needs microphone access to capture your voice requests.";

@@ -15,6 +15,7 @@ struct CaliApp: App {
         LogSuppression.configure()
         print("Cali backend URL: \(AppConfiguration.backendURL.absoluteString)")
         print("Cali supabase URL: \(AppConfiguration.supabaseURL)")
+        LiveActivityPushCoordinator.shared.start()
     }
     
     var body: some Scene {

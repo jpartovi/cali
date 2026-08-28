@@ -79,7 +79,15 @@ final class EventLiveActivityManager {
         )
 
         do {
-            let activity = try Activity.request(attributes: attributes, content: content, pushType: nil)
+            let activity = try Activity.request(attributes: attributes, content: content, pushType: .token)
+            LiveActivityPushCoordinator.shared.watchActivity(activity)
+            Task {
+                await LiveActivityPushService().reportStarted(
+                    eventId: snapshot.id,
+                    title: snapshot.title,
+                    endAt: snapshot.end
+                )
+            }
             Task {
                 await activity.end(content, dismissalPolicy: .after(snapshot.end))
             }

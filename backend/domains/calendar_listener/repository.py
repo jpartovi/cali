@@ -195,6 +195,27 @@ class CalendarListenerRepository:
             raise SupabaseStorageError(exc.message) from exc
         return result.data or []
 
+    def list_in_progress_timed_snapshots(
+        self, user_id: str, now: datetime
+    ) -> List[Dict[str, Any]]:
+        client = get_service_client()
+        now_iso = now.astimezone(timezone.utc).isoformat()
+        try:
+            result = (
+                client.table("calendar_event_snapshots")
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("is_all_day", False)
+                .in_("status", ["confirmed", "tentative"])
+                .lte("start_at", now_iso)
+                .gt("end_at", now_iso)
+                .order("start_at")
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return result.data or []
+
     def upsert_snapshot(self, data: Dict[str, Any]) -> Dict[str, Any]:
         client = get_service_client()
         payload = _without_none(data)
