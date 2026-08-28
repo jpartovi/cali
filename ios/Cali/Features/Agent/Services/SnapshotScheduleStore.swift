@@ -90,13 +90,15 @@ final class SnapshotScheduleStore {
         // Keep tokens alive: supabase-swift cancels callbacks when ObservationToken deinits.
         // Listen per event type: AnyAction (`*`) does not match server INSERT/UPDATE/DELETE.
         listenToPostgresChanges(channel, table: "calendar_event_snapshots") { [weak self] action in
+            let store = self
             Task { @MainActor in
-                self?.applySnapshotChange(action)
+                store?.applySnapshotChange(action)
             }
         }
         listenToPostgresChanges(channel, table: "calendars") { [weak self] action in
+            let store = self
             Task { @MainActor in
-                self?.applyCalendarChange(action)
+                store?.applyCalendarChange(action)
             }
         }
 

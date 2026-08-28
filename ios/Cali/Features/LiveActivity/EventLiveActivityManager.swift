@@ -79,7 +79,12 @@ final class EventLiveActivityManager {
         )
 
         do {
-            let activity = try Activity.request(attributes: attributes, content: content, pushType: .token)
+            let activity: Activity<EventActivityAttributes>
+            if let pushed = try? Activity.request(attributes: attributes, content: content, pushType: .token) {
+                activity = pushed
+            } else {
+                activity = try Activity.request(attributes: attributes, content: content)
+            }
             LiveActivityPushCoordinator.shared.watchActivity(activity)
             Task {
                 await LiveActivityPushService().reportStarted(
