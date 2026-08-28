@@ -63,11 +63,9 @@ struct AgentView: View {
                 }
             }
         }
-        .onChange(of: viewModel.displayEvents) { oldValue, newValue in
-            // Clear EventDetailsModal when schedule reloads with new events
-            // This ensures the modal doesn't show stale event data
-            // Only clear if we have a selected event and the events actually changed
-            if selectedEventForDetails != nil && oldValue != newValue {
+        .onChange(of: viewModel.displayEvents) { _, newValue in
+            if let selected = selectedEventForDetails,
+               !newValue.contains(where: { $0.event.id == selected.id && !$0.isHidden }) {
                 selectedEventForDetails = nil
             }
         }

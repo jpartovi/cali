@@ -45,15 +45,6 @@ final class AgentViewModel: ObservableObject {
     @Published var noticeMessage: String?
     @Published var errorState: AgentError?
     
-    // Windowed event loading state
-    @Published private(set) var loadedWindowStart: Date?
-    @Published private(set) var loadedWindowEnd: Date?
-    @Published private(set) var isLoadingWindow: Bool = false
-    
-    // Window loading configuration
-    private let windowBuffer: Int = 14  // Days to load on each side of visible
-    private let reloadThreshold: Int = 5  // Days from edge to trigger reload
-    
     private var noticeDismissTask: Task<Void, Never>?
     private var errorDismissTask: Task<Void, Never>?
     private var isReadyToSyncLiveActivities = false
@@ -103,18 +94,12 @@ final class AgentViewModel: ObservableObject {
     private let transcriptionService: TranscriptionServicing
     private let speechRecognitionService: SpeechRecognitionServicing
     private let useOnDeviceSpeechRecognition: Bool
-    private let scheduleService: GoogleCalendarScheduleServicing
+    private let snapshotStore = SnapshotScheduleStore()
+    private var hasStartedLiveSchedule = false
     private let calendarService: CalendarServicing
     private let showScheduleHandler: ShowScheduleActionHandling
     private let calendar: Foundation.Calendar = Foundation.Calendar.autoupdatingCurrent
     private var liveTranscriptCancellable: AnyCancellable?
-    
-    private static let iso8601DateFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.timeZone = .autoupdatingCurrent
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 
     init(
         recorder: AgentAudioRecorder? = nil,
@@ -122,7 +107,6 @@ final class AgentViewModel: ObservableObject {
         transcriptionService: TranscriptionServicing? = nil,
         speechRecognitionService: SpeechRecognitionServicing? = nil,
         useOnDeviceSpeechRecognition: Bool = true,
-        scheduleService: GoogleCalendarScheduleServicing? = nil,
         calendarService: CalendarServicing? = nil,
         showScheduleHandler: ShowScheduleActionHandling? = nil,
         initialScheduleDate: Date = Date(),
@@ -133,7 +117,6 @@ final class AgentViewModel: ObservableObject {
         self.transcriptionService = transcriptionService ?? TranscriptionService()
         self.speechRecognitionService = speechRecognitionService ?? SpeechRecognitionService()
         self.useOnDeviceSpeechRecognition = useOnDeviceSpeechRecognition
-        self.scheduleService = scheduleService ?? GoogleCalendarScheduleService()
         self.calendarService = calendarService ?? CalendarService()
         self.showScheduleHandler = showScheduleHandler ?? ShowScheduleActionHandler()
         self.scheduleDate = calendar.startOfDay(for: initialScheduleDate)
@@ -523,138 +506,54 @@ final class AgentViewModel: ObservableObject {
         try await loadWindowedEvents(centerDate: today, force: force)
     }
 
-    /// Load schedule for a given date using the unified `/api/v1/calendars/schedule` endpoint.
-    /// 
-    /// This method is used by all agent-driven schedule displays:
-    /// - show-schedule: Uses the date from agent metadata
-    /// - show-event: Fetches event to get start date, then loads schedule
-    /// - update-event: Uses metadata start date or fetches event, then loads schedule
-    /// - delete-event: Fetches event to get start date, then loads schedule
-    /// - create-event: Uses metadata start date, then loads schedule
-    ///
-    /// All flows use the same n-day window logic via `dateRange(for:)` and fetch events
-    /// from the unified schedule endpoint.
-    private func loadSchedule(
-        for date: Date,
-        force: Bool,
-        accessToken initialToken: String? = nil,
-        focusEvent: ScheduleFocusEvent? = nil
-    ) async throws {
-        guard isLoadingSchedule == false else {
-            return
-        }
-        if force == false, calendar.isDate(scheduleDate, inSameDayAs: date), isLoadingSchedule {
-            return
-        }
-
-        isLoadingSchedule = true
-        defer {
-            isLoadingSchedule = false
-        }
-
-        let loadStart = Date()
-        let dateRange = self.dateRange(for: date)
-        
-        let startDateISO = Self.iso8601DateFormatter.string(from: dateRange.start)
-        let endDateISO = Self.iso8601DateFormatter.string(from: dateRange.end)
-        
-        let token = try await resolveAccessToken(initial: initialToken)
-        let fetchStart = Date()
-        let events = try await fetchScheduleEvents(
-            startDateISO: startDateISO,
-            endDateISO: endDateISO,
-            accessToken: token
-        )
-            let fetchDuration = Date().timeIntervalSince(fetchStart)
-            await timingLogger.logStep("frontend.load_schedule.fetch_events", duration: fetchDuration, details: "event_count=\(events.count)")
-
-        print("Loaded schedule: \(events.count) events")
-        scheduleDate = dateRange.start
-        displayEvents = events
-        self.focusEvent = focusEvent
-        hasLoadedSchedule = true
-        
-        let loadDuration = Date().timeIntervalSince(loadStart)
-        await timingLogger.logStep("frontend.load_schedule", duration: loadDuration)
-    }
-    
-    // MARK: - Windowed Event Loading
-    
-    /// Load events for a window centered on the given date.
-    /// Used by SwipeableScheduleView for dynamic loading as user scrolls.
+    /// Ensure the live snapshot schedule is running. `force` re-queries Supabase without
+    /// tearing down the Realtime subscription.
     func loadWindowedEvents(centerDate: Date, force: Bool = false) async throws {
         let normalizedCenter = calendar.startOfDay(for: centerDate)
-        
-        // Calculate window: centerDate ± windowBuffer days
-        guard let windowStart = calendar.date(byAdding: .day, value: -windowBuffer, to: normalizedCenter),
-              let windowEnd = calendar.date(byAdding: .day, value: windowBuffer + 1, to: normalizedCenter) else {
-            return
-        }
-        
-        // Skip if already loaded (unless force)
-        if !force, let loadedStart = loadedWindowStart, let loadedEnd = loadedWindowEnd {
-            if windowStart >= loadedStart && windowEnd <= loadedEnd {
-                return  // Already loaded
+
+        if !hasStartedLiveSchedule {
+            hasStartedLiveSchedule = true
+            snapshotStore.onEventsChanged = { [weak self] events in
+                self?.replaceDisplayEventsFromSnapshots(events)
             }
-        }
-        
-        // Prevent concurrent loads
-        guard !isLoadingWindow else { return }
-        
-        isLoadingWindow = true
-        defer { isLoadingWindow = false }
-        
-        let startDateISO = Self.iso8601DateFormatter.string(from: windowStart)
-        let endDateISO = Self.iso8601DateFormatter.string(from: windowEnd)
-        
-        let token = try await resolveAccessToken(initial: nil)
-        let events = try await fetchScheduleEvents(
-            startDateISO: startDateISO,
-            endDateISO: endDateISO,
-            accessToken: token
-        )
-        
-        displayEvents = events
-        loadedWindowStart = windowStart
-        loadedWindowEnd = windowEnd
-        
-        // Only set scheduleDate on initial load - it's used as the stable reference point
-        // for SwipeableScheduleView. Changing it later would cause the view to jump.
-        if !hasLoadedSchedule {
+            do {
+                try await snapshotStore.start()
+            } catch {
+                hasStartedLiveSchedule = false
+                print("Snapshot schedule subscribe failed: \(error)")
+                throw error
+            }
             scheduleDate = normalizedCenter
+        } else if force {
+            try await snapshotStore.refresh()
         }
+
         hasLoadedSchedule = true
     }
-    
-    /// Called when the visible day range changes in SwipeableScheduleView.
-    /// Checks if a reload is needed based on proximity to window edges.
-    func onVisibleDaysChanged(firstVisibleDate: Date) {
-        Task {
-            await checkAndReloadIfNeeded(visibleDate: firstVisibleDate)
+
+    /// Visible-day changes no longer refetch Google; snapshots stay live via Realtime.
+    func onVisibleDaysChanged(firstVisibleDate _: Date) {}
+
+    private func replaceDisplayEventsFromSnapshots(_ snapshots: [DisplayEvent]) {
+        let overlays = displayEvents.filter { $0.style != nil }
+        let hiddenIds = Set(displayEvents.filter(\.isHidden).map(\.id))
+
+        var next = snapshots.map { item in
+            let overlay = overlays.first(where: { $0.id == item.id })
+            let style = overlay?.style ?? (focusEvent?.eventID == item.id ? focusEvent?.style : nil)
+            return DisplayEvent(
+                event: item.event,
+                style: style,
+                isHidden: hiddenIds.contains(item.id)
+            )
         }
-    }
-    
-    private func checkAndReloadIfNeeded(visibleDate: Date) async {
-        let normalizedVisible = calendar.startOfDay(for: visibleDate)
-        
-        guard let loadedStart = loadedWindowStart,
-              let loadedEnd = loadedWindowEnd else {
-            // No window loaded yet, load initial
-            try? await loadWindowedEvents(centerDate: normalizedVisible)
-            return
+
+        for overlay in overlays where next.contains(where: { $0.id == overlay.id }) == false {
+            next.append(overlay)
         }
-        
-        // Calculate distance to window edges
-        let daysToStart = calendar.dateComponents([.day], from: loadedStart, to: normalizedVisible).day ?? 0
-        let daysToEnd = calendar.dateComponents([.day], from: normalizedVisible, to: loadedEnd).day ?? 0
-        
-        // Reload if within threshold of edge OR if completely outside the window
-        let nearEdge = daysToStart < reloadThreshold || daysToEnd < reloadThreshold
-        let outsideWindow = daysToStart < 0 || daysToEnd < 0  // Before start or after end
-        
-        if nearEdge || outsideWindow {
-            try? await loadWindowedEvents(centerDate: normalizedVisible)
-        }
+
+        displayEvents = next
+        hasLoadedSchedule = true
     }
 
     private func localizedMessage(for error: Error) -> String {
@@ -963,39 +862,6 @@ final class AgentViewModel: ObservableObject {
         }
     }
 
-    private func fetchScheduleEvents(
-        startDateISO: String,
-        endDateISO: String,
-        accessToken: String
-    ) async throws -> [DisplayEvent] {
-        // Try the request first
-        let networkStart = Date()
-        do {
-            let schedule = try await scheduleService.fetchSchedule(
-                startDateISO: startDateISO,
-                endDateISO: endDateISO,
-                accessToken: accessToken
-            )
-            let networkDuration = Date().timeIntervalSince(networkStart)
-            await timingLogger.logStep("frontend.fetch_schedule_events.network", duration: networkDuration, details: "event_count=\(schedule.events.count)")
-            return schedule.events.map { DisplayEvent(event: $0) }
-        } catch GoogleCalendarScheduleServiceError.unauthorized {
-            // Token expired - refresh and retry once
-            guard let refreshedToken = await AuthTokenProvider.shared.currentAccessToken() else {
-                throw AccessTokenError.missingAuthProvider
-            }
-            let retryStart = Date()
-            let schedule = try await scheduleService.fetchSchedule(
-                startDateISO: startDateISO,
-                endDateISO: endDateISO,
-                accessToken: refreshedToken
-            )
-            let retryDuration = Date().timeIntervalSince(retryStart)
-            await timingLogger.logStep("frontend.fetch_schedule_events.network_retry", duration: retryDuration, details: "event_count=\(schedule.events.count)")
-            return schedule.events.map { DisplayEvent(event: $0) }
-        }
-    }
-
     private func fetchEventWithRefresh(
         accessToken: String,
         calendarId: String,
@@ -1058,7 +924,7 @@ final class AgentViewModel: ObservableObject {
             throw NSError(domain: "AgentViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Event has no start date"])
         }
 
-        try await loadWindowedEvents(centerDate: eventDay, force: true)
+        try await loadWindowedEvents(centerDate: eventDay)
         self.focusEvent = focus
         
         let timeOfDay: Double?
@@ -1108,7 +974,7 @@ final class AgentViewModel: ObservableObject {
             throw NSError(domain: "AgentViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Event has no start date"])
         }
         
-        try await loadWindowedEvents(centerDate: eventDay, force: true)
+        try await loadWindowedEvents(centerDate: eventDay)
         self.focusEvent = focus
         
         scrollTarget = ScheduleScrollTarget(date: eventDay, timeOfDay: nil)
@@ -1203,7 +1069,7 @@ final class AgentViewModel: ObservableObject {
             throw NSError(domain: "AgentViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Event has no start date"])
         }
         
-        try await loadWindowedEvents(centerDate: eventDay, force: true)
+        try await loadWindowedEvents(centerDate: eventDay)
         var displayEvents = self.displayEvents
         
         // Look up calendar color: first try from original event, then from existing events, then from calendar list
@@ -1361,7 +1227,7 @@ final class AgentViewModel: ObservableObject {
             throw NSError(domain: "AgentViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Start and end must both be timed or both be all-day events"])
         }
         
-        try await loadWindowedEvents(centerDate: eventDay, force: true)
+        try await loadWindowedEvents(centerDate: eventDay)
         var displayEvents = self.displayEvents
         
         // Look up calendar color: first try from existing events, then from calendar list
@@ -1596,8 +1462,8 @@ final class AgentViewModel: ObservableObject {
                     }
                 }
                 
-                try await loadWindowedEvents(centerDate: eventDay, force: true)
-                
+                clearActionState(for: pendingAction)
+
                 let confirmCreateTimeOfDay: Double?
                 if let start = createdEvent.start, case .timed(let dateTime, _) = start.eventTime {
                     confirmCreateTimeOfDay = timeOfDay(from: dateTime)
@@ -1740,7 +1606,7 @@ final class AgentViewModel: ObservableObject {
                 }
                 
                 let eventDay = calendar.startOfDay(for: eventStartDate)
-                try await loadWindowedEvents(centerDate: eventDay, force: true)
+                clearActionState(for: pendingAction)
 
                 let confirmUpdateTimeOfDay: Double? = isTimedEvent ? timeOfDay(from: eventStartDate) : nil
                 scrollTarget = ScheduleScrollTarget(date: eventDay, timeOfDay: confirmUpdateTimeOfDay)
@@ -1783,11 +1649,6 @@ final class AgentViewModel: ObservableObject {
                     )
                 }
                 
-                // Clear focus event
-                focusEvent = nil
-                
-                // Reload the schedule to reflect the deletion
-                // Find the event to get its date for reloading using enum pattern matching
                 if let targetEvent = displayEvents.first(where: { $0.event.id == eventID }) {
                     let eventDay: Date?
                     if let start = targetEvent.event.start {
@@ -1803,18 +1664,14 @@ final class AgentViewModel: ObservableObject {
                     } else {
                         eventDay = nil
                     }
-                    
-                    if let eventDay = eventDay {
-                        try await loadWindowedEvents(centerDate: eventDay, force: true)
-                    } else {
-                        let today = Date()
-                        try await loadWindowedEvents(centerDate: today, force: true)
+                    if let eventDay {
+                        scrollTarget = ScheduleScrollTarget(date: eventDay, timeOfDay: nil)
                     }
-                } else {
-                    let today = Date()
-                    try await loadWindowedEvents(centerDate: today, force: true)
                 }
-                
+
+                displayEvents.removeAll { $0.event.id == eventID }
+                clearActionState(for: pendingAction)
+
                 print("Deleted event: \(eventID)")
             } catch {
                 // Log full error details for debugging (verbose internal logging)
@@ -1833,7 +1690,7 @@ final class AgentViewModel: ObservableObject {
         }
         
         let config = showScheduleHandler.configuration(for: agentResponse)
-        try await loadWindowedEvents(centerDate: config.date, force: true)
+        try await loadWindowedEvents(centerDate: config.date)
         
         scrollTarget = ScheduleScrollTarget(date: config.date, timeOfDay: nil)
         
@@ -1861,14 +1718,6 @@ final class AgentViewModel: ObservableObject {
         let minute = calendar.component(.minute, from: date)
         let second = calendar.component(.second, from: date)
         return Double(hour) + Double(minute) / 60.0 + Double(second) / 3600.0
-    }
-    
-    private func dateRange(for date: Date) -> (start: Date, end: Date) {
-        let normalizedDate = calendar.startOfDay(for: date)
-        // End date should be the start of the day after the last day to include all events in the last day
-        // For numberOfDays=2, this means: start of day 1 to start of day 3 (inclusive of all of day 2)
-        let endDate = calendar.date(byAdding: .day, value: numberOfDays, to: normalizedDate) ?? normalizedDate
-        return (start: normalizedDate, end: endDate)
     }
 
 }
