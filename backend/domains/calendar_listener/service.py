@@ -28,13 +28,14 @@ from domains.calendar_listener.triggers import CalendarChangeEvent, emit_change
 from domains.calendars.providers.google import GoogleCalendarAPIError, GoogleCalendarHttpClient
 from domains.calendars.repository import CalendarRepository
 from domains.calendars.service import CalendarService
+from utils.errors import GoogleCalendarAuthError
 
 logger = logging.getLogger(__name__)
 
 SUPPRESSION_WINDOW = timedelta(minutes=2)
 SYNC_LOCK_STALE = timedelta(minutes=2)
 WATCH_RENEW_LEAD = timedelta(hours=24)
-RECONCILE_STALE = timedelta(minutes=20)
+RECONCILE_STALE = timedelta(minutes=1)
 MAX_BOOTSTRAPS_PER_TICK = 3
 MAX_SYNCS_PER_TICK = 10
 MAX_JOBS_PER_TICK = 50
@@ -84,8 +85,14 @@ class CalendarListenerService:
         if resource_state == "sync":
             return
         watch = self.listener_repo.get_watch_by_channel(channel_id)
+        if not watch and resource_id:
+            watch = self.listener_repo.get_watch_by_resource_id(resource_id)
         if not watch:
-            logger.warning("Google calendar webhook for unknown channel_id=%s", channel_id)
+            logger.warning(
+                "Google calendar webhook for unknown channel_id=%s resource_id=%s",
+                channel_id,
+                resource_id,
+            )
             return
         if resource_id and watch.get("resource_id") and resource_id != watch["resource_id"]:
             logger.warning("Google calendar webhook resource_id mismatch channel=%s", channel_id)
@@ -217,6 +224,11 @@ class CalendarListenerService:
             try:
                 await self._ensure_account_watches(account, bootstrap=True)
                 bootstrapped += 1
+            except GoogleCalendarAuthError:
+                logger.warning(
+                    "Skipping calendar listener bootstrap; Google auth expired account=%s",
+                    account.get("id"),
+                )
             except Exception:
                 logger.exception("Failed to bootstrap calendar listener account=%s", account.get("id"))
         return bootstrapped

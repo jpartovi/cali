@@ -20,11 +20,37 @@ class CalendarListenerRepository:
 
     def get_watch_by_channel(self, channel_id: str) -> Optional[Dict[str, Any]]:
         client = get_service_client()
+        normalized = (channel_id or "").strip()
+        if not normalized:
+            return None
         try:
             result = (
                 client.table("calendar_watches")
                 .select("*")
-                .eq("channel_id", channel_id)
+                .eq("channel_id", normalized)
+                .limit(1)
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        if result.data:
+            return result.data[0]
+        for watch in self.list_watches():
+            stored = (watch.get("channel_id") or "").strip()
+            if stored == normalized or stored.replace("-", "") == normalized.replace("-", ""):
+                return watch
+        return None
+
+    def get_watch_by_resource_id(self, resource_id: str) -> Optional[Dict[str, Any]]:
+        client = get_service_client()
+        normalized = (resource_id or "").strip()
+        if not normalized:
+            return None
+        try:
+            result = (
+                client.table("calendar_watches")
+                .select("*")
+                .eq("resource_id", normalized)
                 .limit(1)
                 .execute()
             )
