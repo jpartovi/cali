@@ -25,6 +25,10 @@ struct LiveActivityPushService {
         await post(path: "/api/v1/live-activities/activity-token", body: ["eventId": eventId, "token": token])
     }
 
+    func reportDismissed(eventId: String) async {
+        await post(path: "/api/v1/live-activities/dismissed", body: ["eventId": eventId])
+    }
+
     func reportStarted(eventId: String, title: String, endAt: Date) async {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]

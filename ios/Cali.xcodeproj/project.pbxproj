@@ -13,6 +13,8 @@
 		A21E88F02F1A4B0100000004 /* CaliWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000005 /* CaliWidgets.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A21E88F02F1A4B0100000021 /* OpenCameraIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000020 /* OpenCameraIntent.swift */; };
 		A21E88F02F1A4B0100000022 /* OpenCameraIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000020 /* OpenCameraIntent.swift */; };
+		A21E88F02F1A4B0100000031 /* DismissEventActivityIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000030 /* DismissEventActivityIntent.swift */; };
+		A21E88F02F1A4B0100000032 /* DismissEventActivityIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A21E88F02F1A4B0100000030 /* DismissEventActivityIntent.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -44,6 +46,7 @@
 		A21E88F02F1A4B0100000003 /* EventActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventActivityAttributes.swift; sourceTree = "<group>"; };
 		A21E88F02F1A4B0100000005 /* CaliWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = CaliWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A21E88F02F1A4B0100000020 /* OpenCameraIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCameraIntent.swift; sourceTree = "<group>"; };
+		A21E88F02F1A4B0100000030 /* DismissEventActivityIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DismissEventActivityIntent.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -102,6 +105,7 @@
 			children = (
 				A21E88F02F1A4B0100000003 /* EventActivityAttributes.swift */,
 				A21E88F02F1A4B0100000020 /* OpenCameraIntent.swift */,
+				A21E88F02F1A4B0100000030 /* DismissEventActivityIntent.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -219,6 +223,7 @@
 			files = (
 				A21E88F02F1A4B0100000001 /* EventActivityAttributes.swift in Sources */,
 				A21E88F02F1A4B0100000021 /* OpenCameraIntent.swift in Sources */,
+				A21E88F02F1A4B0100000031 /* DismissEventActivityIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -228,6 +233,7 @@
 			files = (
 				A21E88F02F1A4B0100000002 /* EventActivityAttributes.swift in Sources */,
 				A21E88F02F1A4B0100000022 /* OpenCameraIntent.swift in Sources */,
+				A21E88F02F1A4B0100000032 /* DismissEventActivityIntent.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

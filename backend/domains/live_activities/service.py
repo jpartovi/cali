@@ -94,6 +94,8 @@ class LiveActivitySyncService:
             end_at = end_at.replace(tzinfo=timezone.utc)
         else:
             end_at = end_at.astimezone(timezone.utc)
+        if self.repository.has_dismissal(user_id, event_id):
+            return
         existing = self.repository.get_started_instance(user_id, event_id)
         if existing:
             self.repository.update_started_instance(
@@ -157,6 +159,8 @@ class LiveActivitySyncService:
         if not isinstance(event_id, str) or not event_id or end_at is None:
             return False
         if not _is_timed_open(snapshot, now):
+            return False
+        if self.repository.has_dismissal(user_id, event_id):
             return False
         if self.repository.get_started_instance(user_id, event_id):
             return False
@@ -260,6 +264,32 @@ class LiveActivitySyncService:
                     exc,
                 )
         self.repository.mark_ended(instance_id)
+
+    async def dismiss_event(self, user_id: str, event_id: str) -> None:
+        self.repository.upsert_dismissal(user_id, event_id)
+        instance = self.repository.get_started_instance(user_id, event_id)
+        if not instance:
+            return
+        instance_id = instance.get("id")
+        if not isinstance(instance_id, str):
+            return
+        activity_token = instance.get("activity_push_token")
+        if isinstance(activity_token, str) and activity_token:
+            try:
+                await self.apns.end_live_activity(
+                    activity_push_token=activity_token,
+                    title=instance.get("title") or "Untitled Event",
+                    end_at=_parse_instance_end(instance, datetime.now(timezone.utc)),
+                )
+            except APNsError as exc:
+                logger.error(
+                    "Failed to end dismissed live activity user_id=%s event_id=%s: %s",
+                    user_id,
+                    event_id,
+                    exc,
+                )
+        self.repository.mark_ended(instance_id)
+        await self._fill_cap(user_id, datetime.now(timezone.utc))
 
     async def _fill_cap(self, user_id: str, now: datetime) -> None:
         started = self.repository.list_started_instances(user_id)

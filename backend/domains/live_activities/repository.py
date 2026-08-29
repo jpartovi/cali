@@ -154,3 +154,28 @@ class LiveActivityRepository:
             )
         except APIError as exc:
             raise SupabaseStorageError(exc.message) from exc
+
+    def upsert_dismissal(self, user_id: str, event_id: str) -> None:
+        client = get_service_client()
+        try:
+            client.table("live_activity_dismissals").upsert(
+                {"user_id": user_id, "event_id": event_id},
+                on_conflict="user_id,event_id",
+            ).execute()
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+
+    def has_dismissal(self, user_id: str, event_id: str) -> bool:
+        client = get_service_client()
+        try:
+            result = (
+                client.table("live_activity_dismissals")
+                .select("event_id")
+                .eq("user_id", user_id)
+                .eq("event_id", event_id)
+                .limit(1)
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return bool(result.data)

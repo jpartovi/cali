@@ -7,10 +7,11 @@ import SwiftUI
 import UIKit
 
 struct SystemCameraView: UIViewControllerRepresentable {
-    var onDismiss: () -> Void
+    var onCapture: () -> Void
+    var onCancel: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onDismiss: onDismiss)
+        Coordinator(onCapture: onCapture, onCancel: onCancel)
     }
 
     func makeUIViewController(context: Context) -> UIImagePickerController {
@@ -24,14 +25,16 @@ struct SystemCameraView: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
 
     final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
-        let onDismiss: () -> Void
+        let onCapture: () -> Void
+        let onCancel: () -> Void
 
-        init(onDismiss: @escaping () -> Void) {
-            self.onDismiss = onDismiss
+        init(onCapture: @escaping () -> Void, onCancel: @escaping () -> Void) {
+            self.onCapture = onCapture
+            self.onCancel = onCancel
         }
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
-            onDismiss()
+            onCancel()
         }
 
         func imagePickerController(
@@ -40,8 +43,10 @@ struct SystemCameraView: UIViewControllerRepresentable {
         ) {
             if let image = info[.originalImage] as? UIImage {
                 UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+                onCapture()
+                return
             }
-            onDismiss()
+            onCancel()
         }
     }
 }

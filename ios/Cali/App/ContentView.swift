@@ -130,9 +130,10 @@ struct ContentView: View {
         }
         .environmentObject(viewModel)
         .fullScreenCover(isPresented: $cameraLaunch.showPicker) {
-            SystemCameraView {
-                cameraLaunch.showPicker = false
-            }
+            SystemCameraView(
+                onCapture: { cameraLaunch.didCapturePhoto() },
+                onCancel: { cameraLaunch.didCancel() }
+            )
             .ignoresSafeArea()
         }
         .alert("Camera Unavailable", isPresented: $cameraLaunch.showUnavailable) {

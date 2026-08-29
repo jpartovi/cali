@@ -32,6 +32,10 @@ class StartedRequest(BaseModel):
     endAt: datetime
 
 
+class DismissedRequest(BaseModel):
+    eventId: str = Field(min_length=1)
+
+
 @router.post("/push-to-start-token", status_code=status.HTTP_204_NO_CONTENT)
 async def upsert_push_to_start_token(
     payload: PushToStartTokenRequest,
@@ -100,5 +104,21 @@ async def record_local_start(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not record Live Activity start.",
+        ) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/dismissed", status_code=status.HTTP_204_NO_CONTENT)
+async def dismiss_activity(
+    payload: DismissedRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> Response:
+    try:
+        await LiveActivitySyncService().dismiss_event(current_user.id, payload.eventId)
+    except SupabaseStorageError as exc:
+        logger.error("Failed to dismiss live activity user_id=%s: %s", current_user.id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not dismiss Live Activity.",
         ) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

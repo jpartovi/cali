@@ -12,6 +12,7 @@ final class EventLiveActivityManager {
 
     private let maxConcurrentActivities = 8
     private let upcomingWindow: TimeInterval = 24 * 60 * 60
+    private let dismissedDefaultsKey = "liveActivity.dismissedEventEndDates"
     private var upcomingStartTasks: [String: Task<Void, Never>] = [:]
 
     private init() {}
@@ -22,9 +23,11 @@ final class EventLiveActivityManager {
             return
         }
 
+        pruneDismissed(now: now)
+        let dismissed = dismissedEventIDs()
         let timed = events.compactMap(TimedEventSnapshot.init(displayEvent:))
         let active = timed
-            .filter { $0.isActive(at: now) }
+            .filter { $0.isActive(at: now) && !dismissed.contains($0.id) }
             .sorted { $0.start < $1.start }
         let activeToShow = Array(active.prefix(maxConcurrentActivities))
         let activeIDs = Set(activeToShow.map(\.id))
@@ -51,7 +54,30 @@ final class EventLiveActivityManager {
             }
         }
 
-        scheduleUpcomingStarts(timed: timed, now: now)
+        scheduleUpcomingStarts(timed: timed, dismissed: dismissed, now: now)
+    }
+
+    func dismiss(eventId: String) {
+        guard !eventId.isEmpty else { return }
+
+        let endDate = Activity<EventActivityAttributes>.activities
+            .first(where: { $0.attributes.eventId == eventId })?
+            .content.state.endDate
+            ?? Date().addingTimeInterval(upcomingWindow)
+        rememberDismissed(eventId: eventId, until: endDate)
+        upcomingStartTasks[eventId]?.cancel()
+        upcomingStartTasks[eventId] = nil
+
+        for activity in Activity<EventActivityAttributes>.activities where activity.attributes.eventId == eventId {
+            let activityToEnd = activity
+            Task {
+                await activityToEnd.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+
+        Task {
+            await LiveActivityPushService().reportDismissed(eventId: eventId)
+        }
     }
 
     func endAll() {
@@ -66,6 +92,9 @@ final class EventLiveActivityManager {
 
     private func start(_ snapshot: TimedEventSnapshot) {
         guard snapshot.isActive(at: Date()) else { return }
+        if dismissedEventIDs().contains(snapshot.id) {
+            return
+        }
         if Activity<EventActivityAttributes>.activities.contains(where: { $0.attributes.eventId == snapshot.id }) {
             return
         }
@@ -120,11 +149,18 @@ final class EventLiveActivityManager {
         }
     }
 
-    private func scheduleUpcomingStarts(timed: [TimedEventSnapshot], now: Date) {
+    private func scheduleUpcomingStarts(
+        timed: [TimedEventSnapshot],
+        dismissed: Set<String>,
+        now: Date
+    ) {
         cancelUpcomingTasks()
 
         let deadline = now.addingTimeInterval(upcomingWindow)
         for snapshot in timed where snapshot.start > now && snapshot.start <= deadline {
+            if dismissed.contains(snapshot.id) {
+                continue
+            }
             let delay = snapshot.start.timeIntervalSince(now)
             upcomingStartTasks[snapshot.id] = Task { [weak self] in
                 do {
@@ -147,6 +183,26 @@ final class EventLiveActivityManager {
 
     private func relevanceScore(for snapshot: TimedEventSnapshot) -> Double {
         max(snapshot.end.timeIntervalSinceNow, 0)
+    }
+
+    private func dismissedEventIDs() -> Set<String> {
+        Set(dismissedEndDates().keys)
+    }
+
+    private func rememberDismissed(eventId: String, until endDate: Date) {
+        var stored = dismissedEndDates()
+        stored[eventId] = endDate.timeIntervalSince1970
+        UserDefaults.standard.set(stored, forKey: dismissedDefaultsKey)
+    }
+
+    private func pruneDismissed(now: Date) {
+        let cutoff = now.timeIntervalSince1970
+        let stored = dismissedEndDates().filter { $0.value > cutoff }
+        UserDefaults.standard.set(stored, forKey: dismissedDefaultsKey)
+    }
+
+    private func dismissedEndDates() -> [String: Double] {
+        UserDefaults.standard.dictionary(forKey: dismissedDefaultsKey) as? [String: Double] ?? [:]
     }
 }
 
