@@ -22,6 +22,7 @@ struct CalendarEvent: Identifiable, Codable, Hashable, Sendable {
     let calendarColor: String?
     let location: String?
     let conference: ConferenceInfo?
+    let isPhotoWorthy: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -49,7 +50,8 @@ struct CalendarEvent: Identifiable, Codable, Hashable, Sendable {
          calendarId: String? = nil,
          calendarColor: String? = nil,
          location: String? = nil,
-         conference: ConferenceInfo? = nil) {
+         conference: ConferenceInfo? = nil,
+         isPhotoWorthy: Bool = true) {
         self.id = id
         self.title = title
         self.description = description
@@ -61,6 +63,7 @@ struct CalendarEvent: Identifiable, Codable, Hashable, Sendable {
         self.calendarColor = calendarColor
         self.location = location
         self.conference = conference
+        self.isPhotoWorthy = isPhotoWorthy
     }
 
     init(from decoder: Decoder) throws {
@@ -83,6 +86,7 @@ struct CalendarEvent: Identifiable, Codable, Hashable, Sendable {
         let hangoutLink = CalendarEvent.decodeURL(from: container, forKey: .hangoutLink)
         let rawConference = try container.decodeIfPresent(RawConferenceData.self, forKey: .conferenceData)
         self.conference = ConferenceInfo(rawData: rawConference, hangoutLink: hangoutLink)
+        self.isPhotoWorthy = true
     }
 
     func encode(to encoder: Encoder) throws {

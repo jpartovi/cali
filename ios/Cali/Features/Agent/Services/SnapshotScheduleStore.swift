@@ -238,6 +238,7 @@ private struct EventSnapshotRow: Decodable {
     let timezone: String?
     let organizerEmail: String?
     let attendees: [SnapshotAttendee]
+    let isPhotoWorthy: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -252,6 +253,7 @@ private struct EventSnapshotRow: Decodable {
         case timezone
         case organizerEmail = "organizer_email"
         case attendees
+        case isPhotoWorthy = "is_photo_worthy"
     }
 
     init(from decoder: Decoder) throws {
@@ -268,6 +270,7 @@ private struct EventSnapshotRow: Decodable {
         timezone = try container.decodeIfPresent(String.self, forKey: .timezone)
         organizerEmail = try container.decodeIfPresent(String.self, forKey: .organizerEmail)
         attendees = try container.decodeIfPresent([SnapshotAttendee].self, forKey: .attendees) ?? []
+        isPhotoWorthy = try container.decodeIfPresent(Bool.self, forKey: .isPhotoWorthy) ?? true
     }
 
     static func decode(from record: [String: AnyJSON]) throws -> EventSnapshotRow {
@@ -306,7 +309,8 @@ private struct EventSnapshotRow: Decodable {
             calendarId: googleCalendarId,
             calendarColor: calendarColor,
             location: location,
-            conference: nil
+            conference: nil,
+            isPhotoWorthy: isPhotoWorthy
         )
     }
 }
@@ -359,6 +363,9 @@ private enum SnapshotJSON {
         }
         if case .string(let raw) = record["is_all_day"] {
             record["is_all_day"] = .bool(["true", "t", "1"].contains(raw.lowercased()))
+        }
+        if case .string(let raw) = record["is_photo_worthy"] {
+            record["is_photo_worthy"] = .bool(["true", "t", "1"].contains(raw.lowercased()))
         }
         if case .string(let raw) = record["organizer_self"] {
             record["organizer_self"] = .bool(["true", "t", "1"].contains(raw.lowercased()))

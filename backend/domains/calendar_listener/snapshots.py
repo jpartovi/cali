@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+from domains.calendar_listener.photo_worthiness import PhotoMomentInput, evaluate_photo_worthiness
+
 
 HORIZON_PAST = timedelta(days=1)
 HORIZON_FUTURE = timedelta(days=14)
@@ -111,6 +113,16 @@ def snapshot_from_google_event(
     ical_uid = event.get("iCalUID")
     recurring_event_id = event.get("recurringEventId")
     updated = _parse_datetime(event.get("updated"))
+    is_photo_worthy = evaluate_photo_worthiness(
+        PhotoMomentInput(
+            title=title.strip() if isinstance(title, str) else None,
+            location=location if isinstance(location, str) else None,
+            attendee_count=len(attendees),
+            is_all_day=is_all_day,
+            start_at=start_at,
+            end_at=end_at,
+        )
+    )
     return {
         "user_id": user_id,
         "google_account_id": google_account_id,
@@ -131,6 +143,7 @@ def snapshot_from_google_event(
         "organizer_self": organizer_self,
         "self_response": self_response,
         "attendees": attendees,
+        "is_photo_worthy": is_photo_worthy,
     }
 
 

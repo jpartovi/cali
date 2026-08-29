@@ -215,6 +215,7 @@ private struct TimedEventSnapshot {
     init?(displayEvent: DisplayEvent) {
         guard !displayEvent.isHidden,
               !displayEvent.event.isAllDay,
+              displayEvent.event.isPhotoWorthy,
               let start = displayEvent.event.start?.dateTime,
               let end = displayEvent.event.end?.dateTime,
               start < end else {
