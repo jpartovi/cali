@@ -47,7 +47,7 @@ struct LiveActivityPushService {
             return
         }
         do {
-            var request = try makeRequest(
+            let request = try makeRequest(
                 path: "/api/v1/live-activities/push-to-start-token",
                 accessToken: accessToken,
                 method: "DELETE"
