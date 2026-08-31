@@ -42,18 +42,20 @@ def get_service_client() -> Client:
     settings = get_settings()
     key = settings.supabase_service_role_key.strip()
     logger.info("Creating Supabase service client key_role=%s", _supabase_key_role(key))
-    try:
-        from supabase.lib.client_options import ClientOptions
-    except ImportError:
-        from supabase.client import ClientOptions  # type: ignore[attr-defined]
+    # SyncClientOptions includes `storage`; the base ClientOptions class does not.
+    # Passing base ClientOptions makes create_client raise AttributeError and
+    # every listener tick / webhook 500s.
+    from supabase.lib.client_options import SyncClientOptions
 
-    client = create_client(
-        settings.supabase_url,
-        key,
-        options=ClientOptions(
-            auto_refresh_token=False,
-            persist_session=False,
-        ),
+    options = SyncClientOptions(
+        auto_refresh_token=False,
+        persist_session=False,
+        headers={
+            "X-Client-Info": "supabase-py/service",
+            "Authorization": f"Bearer {key}",
+            "apikey": key,
+        },
     )
+    client = create_client(settings.supabase_url, key, options=options)
     client.postgrest.auth(key)
     return client
