@@ -14,6 +14,7 @@ final class EventLiveActivityManager {
     private let upcomingWindow: TimeInterval = 24 * 60 * 60
     private let dismissedDefaultsKey = "liveActivity.dismissedEventEndDates"
     private var upcomingStartTasks: [String: Task<Void, Never>] = [:]
+    private var inFlightStarts: Set<String> = []
 
     private init() {}
 
@@ -32,12 +33,7 @@ final class EventLiveActivityManager {
         let activeToShow = Array(active.prefix(maxConcurrentActivities))
         let activeIDs = Set(activeToShow.map(\.id))
 
-        let existing = Dictionary(
-            Activity<EventActivityAttributes>.activities.map { activity in
-                (activity.attributes.eventId, activity)
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
+        let existing = activitiesByEventId()
 
         for activity in existing.values where !activeIDs.contains(activity.attributes.eventId) {
             let activityToEnd = activity
@@ -67,6 +63,7 @@ final class EventLiveActivityManager {
         rememberDismissed(eventId: eventId, until: endDate)
         upcomingStartTasks[eventId]?.cancel()
         upcomingStartTasks[eventId] = nil
+        inFlightStarts.remove(eventId)
 
         for activity in Activity<EventActivityAttributes>.activities where activity.attributes.eventId == eventId {
             let activityToEnd = activity
@@ -82,6 +79,7 @@ final class EventLiveActivityManager {
 
     func endAll() {
         cancelUpcomingTasks()
+        inFlightStarts.removeAll()
         for activity in Activity<EventActivityAttributes>.activities {
             let activityToEnd = activity
             Task {
@@ -91,6 +89,49 @@ final class EventLiveActivityManager {
     }
 
     private func start(_ snapshot: TimedEventSnapshot) {
+        guard snapshot.isActive(at: Date()) else { return }
+        if dismissedEventIDs().contains(snapshot.id) {
+            return
+        }
+        if inFlightStarts.contains(snapshot.id) {
+            return
+        }
+        if Activity<EventActivityAttributes>.activities.contains(where: { $0.attributes.eventId == snapshot.id }) {
+            return
+        }
+
+        inFlightStarts.insert(snapshot.id)
+        Task {
+            defer { inFlightStarts.remove(snapshot.id) }
+            await claimAndStart(snapshot)
+        }
+    }
+
+    private func claimAndStart(_ snapshot: TimedEventSnapshot) async {
+        guard snapshot.isActive(at: Date()) else { return }
+        if dismissedEventIDs().contains(snapshot.id) {
+            return
+        }
+        _ = activitiesByEventId()
+        if Activity<EventActivityAttributes>.activities.contains(where: { $0.attributes.eventId == snapshot.id }) {
+            return
+        }
+
+        let didClaim = await LiveActivityPushService().reportStarted(
+            eventId: snapshot.id,
+            title: snapshot.title,
+            endAt: snapshot.end
+        )
+        _ = activitiesByEventId()
+        if Activity<EventActivityAttributes>.activities.contains(where: { $0.attributes.eventId == snapshot.id }) {
+            return
+        }
+        guard didClaim else { return }
+
+        requestActivity(snapshot)
+    }
+
+    private func requestActivity(_ snapshot: TimedEventSnapshot) {
         guard snapshot.isActive(at: Date()) else { return }
         if dismissedEventIDs().contains(snapshot.id) {
             return
@@ -116,13 +157,6 @@ final class EventLiveActivityManager {
             }
             LiveActivityPushCoordinator.shared.watchActivity(activity)
             Task {
-                await LiveActivityPushService().reportStarted(
-                    eventId: snapshot.id,
-                    title: snapshot.title,
-                    endAt: snapshot.end
-                )
-            }
-            Task {
                 await activity.end(content, dismissalPolicy: .after(snapshot.end))
             }
         } catch {
@@ -147,6 +181,26 @@ final class EventLiveActivityManager {
             await activity.update(content)
             await activity.end(content, dismissalPolicy: .after(snapshot.end))
         }
+    }
+
+    private func activitiesByEventId() -> [String: Activity<EventActivityAttributes>] {
+        var keepers: [String: Activity<EventActivityAttributes>] = [:]
+        var extras: [Activity<EventActivityAttributes>] = []
+        for activity in Activity<EventActivityAttributes>.activities {
+            let eventId = activity.attributes.eventId
+            if keepers[eventId] == nil {
+                keepers[eventId] = activity
+            } else {
+                extras.append(activity)
+            }
+        }
+        for extra in extras {
+            let activityToEnd = extra
+            Task {
+                await activityToEnd.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+        return keepers
     }
 
     private func scheduleUpcomingStarts(

@@ -29,17 +29,42 @@ struct LiveActivityPushService {
         await post(path: "/api/v1/live-activities/dismissed", body: ["eventId": eventId])
     }
 
-    func reportStarted(eventId: String, title: String, endAt: Date) async {
+    /// Reserves the Live Activity start on the server.
+    /// - Returns: `true` when this device should call `Activity.request`.
+    ///   `false` when a start is already owned (push-to-start in flight).
+    ///   Network failures return `true` so a local start still happens.
+    func reportStarted(eventId: String, title: String, endAt: Date) async -> Bool {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        await post(
-            path: "/api/v1/live-activities/started",
-            body: [
-                "eventId": eventId,
-                "title": title,
-                "endAt": formatter.string(from: endAt),
-            ]
-        )
+        guard let accessToken = await AuthTokenProvider.shared.currentAccessToken() else {
+            return true
+        }
+        do {
+            var request = try makeRequest(
+                path: "/api/v1/live-activities/started",
+                accessToken: accessToken,
+                method: "POST"
+            )
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: [
+                    "eventId": eventId,
+                    "title": title,
+                    "endAt": formatter.string(from: endAt),
+                ]
+            )
+            let (data, response) = try await urlSession.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                liveActivityPushLogger.error("Failed to record Live Activity start: HTTP \(http.statusCode)")
+                return true
+            }
+            if let decoded = try? JSONDecoder().decode(StartedResponse.self, from: data) {
+                return decoded.didClaim
+            }
+            return true
+        } catch {
+            liveActivityPushLogger.error("Failed to record Live Activity start: \(String(describing: error))")
+            return true
+        }
     }
 
     func deletePushToStartToken() async {
@@ -88,4 +113,8 @@ struct LiveActivityPushService {
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         return request
     }
+}
+
+private struct StartedResponse: Decodable {
+    let didClaim: Bool
 }

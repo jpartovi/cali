@@ -89,25 +89,32 @@ class LiveActivitySyncService:
 
     def record_local_start(
         self, user_id: str, event_id: str, title: str, end_at: datetime
-    ) -> None:
+    ) -> bool:
+        """Reserve the in-progress instance for a local Activity.request.
+
+        Returns True when this caller won the start (iOS should request).
+        Returns False when a start is already owned — iOS must not request,
+        or the event was dismissed. Push-to-start uses the same unique row.
+        """
         if end_at.tzinfo is None:
             end_at = end_at.replace(tzinfo=timezone.utc)
         else:
             end_at = end_at.astimezone(timezone.utc)
         if self.repository.has_dismissal(user_id, event_id):
-            return
+            return False
         existing = self.repository.get_started_instance(user_id, event_id)
         if existing:
             self.repository.update_started_instance(
                 existing["id"], title=title, end_at=end_at
             )
-            return
-        self.repository.try_insert_started_instance(
+            return False
+        row = self.repository.try_insert_started_instance(
             user_id=user_id,
             event_id=event_id,
             title=title,
             end_at=end_at,
         )
+        return row is not None
 
     async def start_in_progress_for_user(self, user_id: str) -> None:
         if not self.apns.is_configured():
@@ -160,7 +167,15 @@ class LiveActivitySyncService:
             return False
         if not _is_timed_open(snapshot, now):
             return False
-        if self.repository.has_dismissal(user_id, event_id):
+        try:
+            dismissed = self.repository.has_dismissal(user_id, event_id)
+        except SupabaseStorageError:
+            logger.warning(
+                "Dismissal lookup failed; continuing live activity start event_id=%s",
+                event_id,
+            )
+            dismissed = False
+        if dismissed:
             return False
         if self.repository.get_started_instance(user_id, event_id):
             return False

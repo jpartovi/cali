@@ -36,6 +36,10 @@ class DismissedRequest(BaseModel):
     eventId: str = Field(min_length=1)
 
 
+class StartedResponse(BaseModel):
+    didClaim: bool
+
+
 @router.post("/push-to-start-token", status_code=status.HTTP_204_NO_CONTENT)
 async def upsert_push_to_start_token(
     payload: PushToStartTokenRequest,
@@ -44,7 +48,8 @@ async def upsert_push_to_start_token(
     service = LiveActivitySyncService()
     try:
         service.upsert_push_to_start_token(current_user.id, payload.token)
-        await service.start_in_progress_for_user(current_user.id)
+        # Do not start in-progress events here. Token upload means the app is
+        # running and will Activity.request locally; push-to-start would duplicate.
     except SupabaseStorageError as exc:
         logger.error("Failed to store push-to-start token user_id=%s: %s", current_user.id, exc)
         raise HTTPException(
@@ -87,13 +92,13 @@ async def upsert_activity_token(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/started", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/started")
 async def record_local_start(
     payload: StartedRequest,
     current_user: AuthenticatedUser = Depends(get_current_user),
-) -> Response:
+) -> StartedResponse:
     try:
-        LiveActivitySyncService().record_local_start(
+        did_claim = LiveActivitySyncService().record_local_start(
             current_user.id,
             payload.eventId,
             payload.title,
@@ -105,7 +110,7 @@ async def record_local_start(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not record Live Activity start.",
         ) from exc
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return StartedResponse(didClaim=did_claim)
 
 
 @router.post("/dismissed", status_code=status.HTTP_204_NO_CONTENT)

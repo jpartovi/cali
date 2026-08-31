@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -9,6 +10,8 @@ from postgrest import APIError
 
 from db.session import get_service_client
 from utils.errors import SupabaseStorageError
+
+logger = logging.getLogger(__name__)
 
 
 class LiveActivityRepository:
@@ -177,5 +180,7 @@ class LiveActivityRepository:
                 .execute()
             )
         except APIError as exc:
-            raise SupabaseStorageError(exc.message) from exc
+            # Missing table or RLS must not block push-to-start.
+            logger.warning("live_activity_dismissals lookup failed: %s", exc.message)
+            return False
         return bool(result.data)
