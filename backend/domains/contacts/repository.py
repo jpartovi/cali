@@ -22,6 +22,11 @@ def _chunks(values: Sequence[str], size: int = _IN_CHUNK) -> Iterable[Sequence[s
         yield values[index : index + size]
 
 
+def _row_chunks(rows: Sequence[Dict[str, Any]], size: int = _IN_CHUNK) -> Iterable[Sequence[Dict[str, Any]]]:
+    for index in range(0, len(rows), size):
+        yield rows[index : index + size]
+
+
 class ContactsRepository:
     """Database access for contacts, emails, and phones."""
 
@@ -168,15 +173,25 @@ class ContactsRepository:
         return rows
 
     def insert_contact(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        rows = self.insert_contacts([data])
+        if not rows:
+            raise SupabaseStorageError("Contact insert returned no row.")
+        return rows[0]
+
+    def insert_contacts(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
         client = get_service_client()
-        payload = _without_none(data)
+        inserted: List[Dict[str, Any]] = []
         try:
-            result = client.table("contacts").insert(payload).execute()
+            for chunk in _row_chunks([_without_none(row) for row in rows]):
+                result = client.table("contacts").insert(list(chunk)).execute()
+                if not result.data or len(result.data) != len(chunk):
+                    raise SupabaseStorageError("Contact insert returned no row.")
+                inserted.extend(result.data)
         except APIError as exc:
             raise SupabaseStorageError(exc.message) from exc
-        if not result.data:
-            raise SupabaseStorageError("Contact insert returned no row.")
-        return result.data[0]
+        return inserted
 
     def update_contact(self, user_id: str, contact_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         client = get_service_client()
@@ -205,11 +220,12 @@ class ContactsRepository:
             return 0
         client = get_service_client()
         try:
-            result = (
-                client.table("contact_emails")
-                .upsert(rows, on_conflict="contact_id,email", ignore_duplicates=True)
-                .execute()
-            )
+            for chunk in _row_chunks(rows):
+                (
+                    client.table("contact_emails")
+                    .upsert(list(chunk), on_conflict="contact_id,email", ignore_duplicates=True)
+                    .execute()
+                )
         except APIError as exc:
             raise SupabaseStorageError(exc.message) from exc
         return len(rows)
@@ -217,6 +233,31 @@ class ContactsRepository:
     def insert_phones(self, rows: List[Dict[str, Any]]) -> int:
         if not rows:
             return 0
+        inserted = 0
+        client = get_service_client()
+        try:
+            for chunk in _row_chunks(rows):
+                try:
+                    result = (
+                        client.table("contact_phones")
+                        .upsert(
+                            list(chunk),
+                            on_conflict="contact_id,phone_raw",
+                            ignore_duplicates=True,
+                        )
+                        .execute()
+                    )
+                    inserted += len(result.data or chunk)
+                except APIError as exc:
+                    message = (exc.message or "").lower()
+                    if "contact_phones_contact_e164_key" not in message and "duplicate" not in message:
+                        raise SupabaseStorageError(exc.message) from exc
+                    inserted += self._insert_phones_one_by_one(list(chunk))
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return inserted
+
+    def _insert_phones_one_by_one(self, rows: List[Dict[str, Any]]) -> int:
         inserted = 0
         client = get_service_client()
         for row in rows:
@@ -233,6 +274,21 @@ class ContactsRepository:
                 raise SupabaseStorageError(exc.message) from exc
             inserted += len(result.data or [])
         return inserted
+
+    def list_contacts(self, user_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+        client = get_service_client()
+        try:
+            result = (
+                client.table("contacts")
+                .select("*")
+                .eq("user_id", user_id)
+                .order("display_name")
+                .limit(limit)
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return result.data or []
 
     def search_contacts(self, user_id: str, query: str, limit: int = 50) -> List[Dict[str, Any]]:
         client = get_service_client()

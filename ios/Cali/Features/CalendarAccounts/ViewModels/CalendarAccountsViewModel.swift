@@ -20,30 +20,23 @@ final class CalendarAccountsViewModel: ObservableObject {
     @Published private(set) var deletionError: String?
     @Published private(set) var togglingCalendarIDs: Set<String> = []
     @Published private(set) var toggleError: String?
-    @Published private(set) var isSyncingContacts: Bool = false
-    @Published private(set) var contactsMessage: String?
-    @Published private(set) var contactsError: String?
     @Published var expandedAccountIDs: Set<String> = []
 
     private let calendarService: CalendarServicing
-    private let contactsService: ContactsServicing
-    private static let didImportContactsKey = "cali.didImportContacts"
     private let callbackScheme: String
     private var hasLoaded: Bool = false
     private let sessionProvider: AuthSessionProviding?
     private let storedSession: OTPSession?
 
-    init(session: OTPSession, calendarService: CalendarServicing? = nil, contactsService: ContactsServicing? = nil, callbackScheme: String? = nil) {
+    init(session: OTPSession, calendarService: CalendarServicing? = nil, callbackScheme: String? = nil) {
         self.calendarService = calendarService ?? CalendarService()
-        self.contactsService = contactsService ?? ContactsService()
         self.callbackScheme = callbackScheme ?? AppConfiguration.googleOAuthCallbackScheme
         self.sessionProvider = nil
         self.storedSession = session
     }
 
-    init(sessionProvider: AuthSessionProviding, calendarService: CalendarServicing? = nil, contactsService: ContactsServicing? = nil, callbackScheme: String? = nil) {
+    init(sessionProvider: AuthSessionProviding, calendarService: CalendarServicing? = nil, callbackScheme: String? = nil) {
         self.calendarService = calendarService ?? CalendarService()
-        self.contactsService = contactsService ?? ContactsService()
         self.callbackScheme = callbackScheme ?? AppConfiguration.googleOAuthCallbackScheme
         self.sessionProvider = sessionProvider
         self.storedSession = sessionProvider.session
@@ -110,7 +103,6 @@ final class CalendarAccountsViewModel: ObservableObject {
             case .success(let message):
                 linkingMessage = message ?? "Google Calendar linked."
                 await loadCalendars(force: true)
-                await enrichFromGoogle()
             case .failure(let message):
                 linkingError = message
             }
@@ -261,101 +253,6 @@ final class CalendarAccountsViewModel: ObservableObject {
 
     func clearToggleError() {
         toggleError = nil
-    }
-
-    func clearContactsFeedback() {
-        contactsError = nil
-        contactsMessage = nil
-    }
-
-    func importContactsIfNeeded(using coordinator: CalendarOAuthCoordinating?) async {
-        if UserDefaults.standard.bool(forKey: Self.didImportContactsKey) {
-            return
-        }
-        await syncContacts(using: coordinator, requestPermission: true, allowReauth: coordinator != nil)
-    }
-
-    func syncContacts(
-        using coordinator: CalendarOAuthCoordinating?,
-        requestPermission: Bool,
-        allowReauth: Bool
-    ) async {
-        guard isSyncingContacts == false else { return }
-        isSyncingContacts = true
-        contactsError = nil
-        contactsMessage = nil
-        defer { isSyncingContacts = false }
-
-        guard let accessToken = await currentAccessToken() else {
-            contactsError = "You're signed out. Please sign in again."
-            return
-        }
-
-        if AppleContactsReader.hasAccess() == false {
-            if requestPermission == false {
-                contactsError = "Cali needs access to your contacts to import them."
-                return
-            }
-            do {
-                let granted = try await AppleContactsReader.requestAccess()
-                if granted == false {
-                    contactsError = "Contacts access was denied. You can enable it in Settings."
-                    return
-                }
-            } catch {
-                contactsError = "Cali needs access to your contacts to import them."
-                return
-            }
-        }
-
-        let appleContacts: [AppleContactPayload]
-        do {
-            appleContacts = try AppleContactsReader.loadContacts()
-        } catch {
-            contactsError = "We couldn't read your Apple contacts."
-            return
-        }
-
-        do {
-            let appleResult = try await contactsService.importAppleContacts(
-                accessToken: accessToken,
-                contacts: appleContacts
-            )
-            let googleResult = try await contactsService.importGoogleContacts(accessToken: accessToken)
-            UserDefaults.standard.set(true, forKey: Self.didImportContactsKey)
-            contactsMessage = Self.summary(apple: appleResult, google: googleResult)
-        } catch ContactsServiceError.needsReauth {
-            UserDefaults.standard.set(true, forKey: Self.didImportContactsKey)
-            if allowReauth, let coordinator {
-                await linkCalendar(using: coordinator)
-                return
-            }
-            contactsError = "Imported Apple contacts. Re-link Google to add emails from Google Contacts."
-        } catch ContactsServiceError.unauthorized {
-            contactsError = "We couldn't access your account. Please sign in again."
-        } catch {
-            contactsError = "We couldn't import your contacts. Please try again."
-        }
-    }
-
-    func enrichFromGoogle() async {
-        guard let accessToken = await currentAccessToken() else { return }
-        do {
-            let googleResult = try await contactsService.importGoogleContacts(accessToken: accessToken)
-            let googleEmails = googleResult.accounts.reduce(0) { $0 + $1.emailsAdded }
-            if googleEmails > 0 {
-                contactsMessage = "Google added \(googleEmails) emails to your contacts."
-            }
-        } catch ContactsServiceError.needsReauth {
-            contactsError = "Re-link Google to allow Cali to read Contacts and fill in emails."
-        } catch {
-            // Calendar linking succeeded; contact enrichment can be retried from Sync contacts.
-        }
-    }
-
-    private static func summary(apple: AppleContactsImportResponse, google: GoogleContactsImportResponse) -> String {
-        let googleEmails = google.accounts.reduce(0) { $0 + $1.emailsAdded }
-        return "Imported \(apple.imported + apple.merged) contacts. Google added \(googleEmails) emails."
     }
 
     private func currentAccessToken() async -> String? {

@@ -63,6 +63,13 @@ def _add_source(sources: Iterable[str] | None, source: str) -> List[str]:
     return values
 
 
+def _contact_needs_apple_patch(existing: Dict[str, Any], patch: Dict[str, Any]) -> bool:
+    for key in ("given_name", "family_name", "nickname", "display_name", "apple_identifier"):
+        if existing.get(key) != patch.get(key):
+            return True
+    return "apple" not in list(existing.get("sources") or [])
+
+
 class ContactsService:
     """Merge Apple imports and Google People enrichment into the contacts store."""
 
@@ -130,6 +137,10 @@ class ContactsService:
                 keys.add(row["phone_e164"])
 
         now = self.repository.utc_now_iso()
+        assignments: List[Tuple[AppleContactImport, Dict[str, Any] | None]] = []
+        new_payloads: List[Dict[str, Any]] = []
+        updates: List[Tuple[str, Dict[str, Any]]] = []
+
         for item in contacts:
             match = by_apple.get(item.apple_identifier)
             if match is None:
@@ -150,9 +161,8 @@ class ContactsService:
                 item.nickname,
                 [email.email for email in item.emails],
             )
-            was_new = match is None
-            if was_new:
-                match = self.repository.insert_contact(
+            if match is None:
+                new_payloads.append(
                     {
                         "user_id": user_id,
                         "given_name": item.given_name,
@@ -164,39 +174,67 @@ class ContactsService:
                         "last_imported_at": now,
                     }
                 )
+                assignments.append((item, None))
                 imported += 1
             else:
-                sources = _add_source(match.get("sources"), "apple")
-                match = self.repository.update_contact(
-                    user_id,
-                    match["id"],
-                    {
-                        "given_name": item.given_name,
-                        "family_name": item.family_name,
-                        "nickname": item.nickname,
-                        "display_name": display_name,
-                        "apple_identifier": item.apple_identifier,
-                        "sources": sources,
-                        "last_imported_at": now,
-                    },
-                )
+                patch = {
+                    "given_name": item.given_name,
+                    "family_name": item.family_name,
+                    "nickname": item.nickname,
+                    "display_name": display_name,
+                    "apple_identifier": item.apple_identifier,
+                    "sources": _add_source(match.get("sources"), "apple"),
+                    "last_imported_at": now,
+                }
+                if _contact_needs_apple_patch(match, patch):
+                    updates.append((match["id"], patch))
+                assignments.append((item, match))
                 merged += 1
+                by_id[match["id"]] = match
+                by_apple[item.apple_identifier] = match
 
-            by_id[match["id"]] = match
-            by_apple[item.apple_identifier] = match
-            added_e, added_p = self._add_channels(
+        inserted_by_apple = {
+            row["apple_identifier"]: row
+            for row in self.repository.insert_contacts(new_payloads)
+            if row.get("apple_identifier")
+        }
+        for item, match in assignments:
+            if match is not None:
+                continue
+            created = inserted_by_apple.get(item.apple_identifier)
+            if created is None:
+                raise SupabaseStorageError("Contact insert returned no row.")
+            by_id[created["id"]] = created
+            by_apple[item.apple_identifier] = created
+
+        for contact_id, patch in updates:
+            updated = self.repository.update_contact(user_id, contact_id, patch)
+            by_id[contact_id] = updated
+            if updated.get("apple_identifier"):
+                by_apple[updated["apple_identifier"]] = updated
+
+        email_rows: List[Dict[str, Any]] = []
+        phone_rows: List[Dict[str, Any]] = []
+        for item, match in assignments:
+            contact = match or by_apple[item.apple_identifier]
+            added_e, added_p = self._collect_channels(
                 user_id=user_id,
-                contact=match,
+                contact=contact,
                 emails=item.emails,
                 phones=item.phones,
                 source="apple",
-                existing_emails=existing_emails_by_contact.setdefault(match["id"], set()),
-                existing_phones=existing_phones_by_contact.setdefault(match["id"], set()),
+                existing_emails=existing_emails_by_contact.setdefault(contact["id"], set()),
+                existing_phones=existing_phones_by_contact.setdefault(contact["id"], set()),
                 email_to_contact=email_to_contact,
                 e164_to_contact=e164_to_contact,
+                email_rows=email_rows,
+                phone_rows=phone_rows,
             )
             emails_added += added_e
             phones_added += added_p
+
+        self.repository.insert_emails(email_rows)
+        self.repository.insert_phones(phone_rows)
 
         return AppleImportResponse(
             imported=imported,
@@ -293,6 +331,10 @@ class ContactsService:
 
     def search(self, user_id: str, query: str) -> List[ContactResponse]:
         rows = self.repository.search_contacts(user_id, query)
+        return self._hydrate(user_id, rows)
+
+    def list_contacts(self, user_id: str) -> List[ContactResponse]:
+        rows = self.repository.list_contacts(user_id)
         return self._hydrate(user_id, rows)
 
     async def _sync_account(
@@ -406,7 +448,9 @@ class ContactsService:
             if row.get("phone_e164"):
                 existing_phones.add(row["phone_e164"])
 
-        added_e, added_p = self._add_channels(
+        email_rows: List[Dict[str, Any]] = []
+        phone_rows: List[Dict[str, Any]] = []
+        added_e, added_p = self._collect_channels(
             user_id=user_id,
             contact=match,
             emails=emails,
@@ -416,10 +460,14 @@ class ContactsService:
             existing_phones=existing_phones,
             email_to_contact={},
             e164_to_contact={},
+            email_rows=email_rows,
+            phone_rows=phone_rows,
         )
+        self.repository.insert_emails(email_rows)
+        self.repository.insert_phones(phone_rows)
         return was_new, added_e, added_p
 
-    def _add_channels(
+    def _collect_channels(
         self,
         *,
         user_id: str,
@@ -431,8 +479,11 @@ class ContactsService:
         existing_phones: set[str],
         email_to_contact: Dict[str, Dict[str, Any] | None],
         e164_to_contact: Dict[str, Dict[str, Any] | None],
+        email_rows: List[Dict[str, Any]],
+        phone_rows: List[Dict[str, Any]],
     ) -> Tuple[int, int]:
-        email_rows: List[Dict[str, Any]] = []
+        emails_added = 0
+        phones_added = 0
         for email in emails:
             if email.email in existing_emails:
                 continue
@@ -448,8 +499,8 @@ class ContactsService:
                     "source": source,
                 }
             )
+            emails_added += 1
 
-        phone_rows: List[Dict[str, Any]] = []
         for phone in phones:
             e164 = to_e164(phone.phone)
             if phone.phone in existing_phones or (e164 and e164 in existing_phones):
@@ -469,9 +520,8 @@ class ContactsService:
                     "source": source,
                 }
             )
+            phones_added += 1
 
-        emails_added = self.repository.insert_emails(email_rows)
-        phones_added = self.repository.insert_phones(phone_rows)
         return emails_added, phones_added
 
     def _hydrate(self, user_id: str, contacts: List[Dict[str, Any]]) -> List[ContactResponse]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -27,7 +28,7 @@ async def import_apple_contacts(
 ) -> AppleImportResponse:
     service = ContactsService()
     try:
-        return service.import_apple(current_user.id, payload.contacts)
+        return await asyncio.to_thread(service.import_apple, current_user.id, payload.contacts)
     except SupabaseStorageError as exc:
         logger.error("Apple contact import failed user_id=%s: %s", current_user.id, exc)
         raise HTTPException(
@@ -53,12 +54,14 @@ async def import_google_contacts(
 
 @router.get("/", response_model=list[ContactResponse])
 async def search_contacts(
-    q: str = Query(..., min_length=1, max_length=200),
+    q: str | None = Query(None, min_length=1, max_length=200),
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> list[ContactResponse]:
     service = ContactsService()
     try:
-        return service.search(current_user.id, q)
+        if q:
+            return service.search(current_user.id, q)
+        return service.list_contacts(current_user.id)
     except SupabaseStorageError as exc:
         logger.error("Contact search failed user_id=%s: %s", current_user.id, exc)
         raise HTTPException(

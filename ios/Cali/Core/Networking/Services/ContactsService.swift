@@ -36,6 +36,31 @@ struct GoogleContactsImportResponse: Decodable {
     let needsReauthAccountIds: [String]
 }
 
+struct ContactEmailRecord: Decodable, Hashable, Sendable {
+    let email: String
+    let label: String?
+    let isPrimary: Bool
+    let source: String
+}
+
+struct ContactPhoneRecord: Decodable, Hashable, Sendable {
+    let phoneRaw: String
+    let phoneE164: String?
+    let label: String?
+    let isPrimary: Bool
+    let source: String
+}
+
+struct ContactRecord: Identifiable, Decodable, Hashable, Sendable {
+    let id: String
+    let displayName: String
+    let givenName: String?
+    let familyName: String?
+    let nickname: String?
+    let emails: [ContactEmailRecord]
+    let phones: [ContactPhoneRecord]
+}
+
 enum ContactsServiceError: Error {
     case invalidURL
     case unauthorized
@@ -48,6 +73,7 @@ enum ContactsServiceError: Error {
 protocol ContactsServicing {
     func importAppleContacts(accessToken: String, contacts: [AppleContactPayload]) async throws -> AppleContactsImportResponse
     func importGoogleContacts(accessToken: String) async throws -> GoogleContactsImportResponse
+    func listContacts(accessToken: String) async throws -> [ContactRecord]
 }
 
 final class ContactsService: ContactsServicing {
@@ -57,12 +83,22 @@ final class ContactsService: ContactsServicing {
 
     init(
         baseURL: URL = AppConfiguration.backendURL,
-        urlSession: URLSession = NetworkSession.shared,
+        urlSession: URLSession? = nil,
         chunkSize: Int = 200
     ) {
         self.baseURL = baseURL
-        self.urlSession = urlSession
+        self.urlSession = urlSession ?? Self.makeImportSession()
         self.chunkSize = chunkSize
+    }
+
+    private static func makeImportSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForRequest = 180
+        configuration.timeoutIntervalForResource = 300
+        configuration.httpMaximumConnectionsPerHost = 4
+        configuration.networkServiceType = .default
+        return URLSession(configuration: configuration)
     }
 
     func importAppleContacts(accessToken: String, contacts: [AppleContactPayload]) async throws -> AppleContactsImportResponse {
@@ -109,8 +145,18 @@ final class ContactsService: ContactsServicing {
         return response
     }
 
+    func listContacts(accessToken: String) async throws -> [ContactRecord] {
+        try await getJSON(path: "/api/v1/contacts/", accessToken: accessToken)
+    }
+
+    private func getJSON<Response: Decodable>(path: String, accessToken: String) async throws -> Response {
+        var request = try makeRequest(path: path, accessToken: accessToken, method: "GET")
+        request.setValue(nil, forHTTPHeaderField: "Content-Type")
+        return try await decodeResponse(request: request)
+    }
+
     private func postEmpty<Response: Decodable>(path: String, accessToken: String) async throws -> Response {
-        let request = try makeRequest(path: path, accessToken: accessToken)
+        let request = try makeRequest(path: path, accessToken: accessToken, method: "POST")
         return try await decodeResponse(request: request)
     }
 
@@ -119,7 +165,7 @@ final class ContactsService: ContactsServicing {
         accessToken: String,
         body: Body?
     ) async throws -> Response {
-        var request = try makeRequest(path: path, accessToken: accessToken)
+        var request = try makeRequest(path: path, accessToken: accessToken, method: "POST")
         if let body {
             let encoder = JSONEncoder()
             encoder.keyEncodingStrategy = .convertToSnakeCase
@@ -155,14 +201,16 @@ final class ContactsService: ContactsServicing {
         }
     }
 
-    private func makeRequest(path: String, accessToken: String) throws -> URLRequest {
+    private func makeRequest(path: String, accessToken: String, method: String) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw ContactsServiceError.invalidURL
         }
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if method != "GET" {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
         request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         return request
     }

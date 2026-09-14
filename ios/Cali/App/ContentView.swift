@@ -21,6 +21,7 @@ struct ContentView: View {
 
     private enum Destination: Hashable {
         case calendars
+        case contacts
         case codeVerification
     }
 
@@ -60,6 +61,9 @@ struct ContentView: View {
                             Button("Calendar Accounts") {
                                 navigationPath.append(Destination.calendars)
                             }
+                            Button("Contacts") {
+                                navigationPath.append(Destination.contacts)
+                            }
                             Button("Friends") {
                                 showFriendsComingSoonAlert = true
                             }
@@ -84,6 +88,12 @@ struct ContentView: View {
                 case .calendars:
                     if viewModel.session != nil {
                         CalendarAccountsView(authViewModel: viewModel)
+                    } else {
+                        calendarsUnavailableFallback
+                    }
+                case .contacts:
+                    if viewModel.session != nil {
+                        ContactsView()
                     } else {
                         calendarsUnavailableFallback
                     }

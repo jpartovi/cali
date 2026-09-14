@@ -41,7 +41,6 @@ struct CalendarAccountsView: View {
         .toolbarTitleDisplayMode(.inline)
         .task {
             await viewModel.loadCalendars()
-            await viewModel.importContactsIfNeeded(using: coordinator)
         }
         .alert("Remove account?", isPresented: Binding(
             get: { accountPendingDeletion != nil },
@@ -95,20 +94,6 @@ struct CalendarAccountsView: View {
         } message: {
             Text(viewModel.toggleError ?? "")
         }
-        .alert("Contacts", isPresented: Binding(
-            get: { viewModel.contactsError != nil || viewModel.contactsMessage != nil },
-            set: { isPresented in
-                if isPresented == false {
-                    viewModel.clearContactsFeedback()
-                }
-            }
-        )) {
-            Button("OK", role: .cancel) {
-                viewModel.clearContactsFeedback()
-            }
-        } message: {
-            Text(viewModel.contactsError ?? viewModel.contactsMessage ?? "")
-        }
     }
 }
 
@@ -151,44 +136,6 @@ private extension CalendarAccountsView {
         .accessibilityIdentifier("connect-google-calendar")
     }
 
-    var syncContactsButton: some View {
-        Button {
-            Task {
-                await viewModel.syncContacts(using: coordinator, requestPermission: true, allowReauth: true)
-            }
-        } label: {
-            HStack(spacing: 10) {
-                if viewModel.isSyncingContacts {
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(ColorPalette.Text.secondary)
-                        .scaleEffect(0.85, anchor: .center)
-                } else {
-                    Image(systemName: "person.crop.circle.badge.plus")
-                        .imageScale(.medium)
-                        .font(.system(size: 16, weight: .semibold))
-                }
-                Text(viewModel.isSyncingContacts ? "Syncing contacts…" : "Sync contacts")
-                    .font(.callout.weight(.semibold))
-            }
-            .padding(.vertical, 10)
-            .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(ColorPalette.Surface.elevated.opacity(0.9))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(ColorPalette.Surface.overlay.opacity(0.5), lineWidth: 1)
-            )
-            .foregroundStyle(ColorPalette.Text.primary)
-        }
-        .buttonStyle(.plain)
-        .disabled(viewModel.isSyncingContacts || viewModel.isLinking)
-        .accessibilityIdentifier("sync-contacts")
-    }
-
     @ViewBuilder
     var content: some View {
         if viewModel.isLoading {
@@ -201,9 +148,6 @@ private extension CalendarAccountsView {
             }
 
             connectInlineButton
-                .padding(.top, 4)
-
-            syncContactsButton
                 .padding(.top, 4)
         }
     }

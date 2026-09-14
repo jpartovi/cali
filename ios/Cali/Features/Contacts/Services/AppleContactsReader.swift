@@ -27,17 +27,17 @@ struct AppleContactPayload: Codable, Sendable {
     let phones: [AppleImportedPhone]
 }
 
-enum AppleContactsReaderError: Error {
+enum AppleContactsReaderError: Error, Sendable {
     case accessDenied
-    case fetchFailed(Error)
+    case fetchFailed(String)
 }
 
 enum AppleContactsReader {
-    static func authorizationStatus() -> CNAuthorizationStatus {
+    nonisolated static func authorizationStatus() -> CNAuthorizationStatus {
         CNContactStore.authorizationStatus(for: .contacts)
     }
 
-    static func hasAccess() -> Bool {
+    nonisolated static func hasAccess() -> Bool {
         let status = authorizationStatus()
         if status == .authorized {
             return true
@@ -52,7 +52,13 @@ enum AppleContactsReader {
         try await CNContactStore().requestAccess(for: .contacts)
     }
 
-    static func loadContacts() throws -> [AppleContactPayload] {
+    nonisolated static func loadContacts() async throws -> [AppleContactPayload] {
+        try await Task.detached(priority: .userInitiated) {
+            try fetchContacts()
+        }.value
+    }
+
+    nonisolated private static func fetchContacts() throws -> [AppleContactPayload] {
         guard hasAccess() else {
             throw AppleContactsReaderError.accessDenied
         }
@@ -107,18 +113,18 @@ enum AppleContactsReader {
                 )
             }
         } catch {
-            throw AppleContactsReaderError.fetchFailed(error)
+            throw AppleContactsReaderError.fetchFailed(error.localizedDescription)
         }
 
         return payloads
     }
 
-    private static func nonempty(_ value: String) -> String? {
+    nonisolated private static func nonempty(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private static func localizedLabel(_ label: String?) -> String? {
+    nonisolated private static func localizedLabel(_ label: String?) -> String? {
         guard let label, label.isEmpty == false else { return nil }
         let localized = CNLabeledValue<NSString>.localizedString(forLabel: label)
         return localized.isEmpty ? label : localized
