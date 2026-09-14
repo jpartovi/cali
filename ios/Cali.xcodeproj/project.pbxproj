@@ -387,6 +387,7 @@
 				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleTypeRole = Editor;\n    CFBundleURLName = \"com.cali-inc.Cali\";\n    CFBundleURLSchemes =     (\n        cali\n    );\n}";
 				INFOPLIST_KEY_GoogleOAuthCallbackURL = "cali://oauth/google";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Cali uses the camera so you can take a photo from a Live Activity.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Cali imports your contacts so you can invite people to events by name.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Cali needs microphone access to capture your voice requests.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Cali saves photos you take from a Live Activity to your library.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Cali uses speech recognition to transcribe your voice requests.";
@@ -431,6 +432,7 @@
 				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleTypeRole = Editor;\n    CFBundleURLName = \"com.cali-inc.Cali\";\n    CFBundleURLSchemes =     (\n        cali\n    );\n}";
 				INFOPLIST_KEY_GoogleOAuthCallbackURL = "cali://oauth/google";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Cali uses the camera so you can take a photo from a Live Activity.";
+				INFOPLIST_KEY_NSContactsUsageDescription = "Cali imports your contacts so you can invite people to events by name.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Cali needs microphone access to capture your voice requests.";
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Cali saves photos you take from a Live Activity to your library.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Cali uses speech recognition to transcribe your voice requests.";

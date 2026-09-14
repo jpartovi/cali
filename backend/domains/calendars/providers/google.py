@@ -31,8 +31,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Scopes required for Google Calendar API
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+# Scopes required when constructing Google API credentials (must cover granted OAuth scopes)
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/contacts.readonly",
+    "https://www.googleapis.com/auth/contacts.other.readonly",
+]
 
 STATE_AUDIENCE = "google-oauth-state"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
