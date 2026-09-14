@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
@@ -68,6 +69,43 @@ def _contact_needs_apple_patch(existing: Dict[str, Any], patch: Dict[str, Any]) 
         if existing.get(key) != patch.get(key):
             return True
     return "apple" not in list(existing.get("sources") or [])
+
+
+def _contact_upsert_row(existing: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    row = {
+        "id": existing["id"],
+        "user_id": existing["user_id"],
+        "given_name": existing.get("given_name"),
+        "family_name": existing.get("family_name"),
+        "nickname": existing.get("nickname"),
+        "display_name": existing["display_name"],
+        "apple_identifier": existing.get("apple_identifier"),
+        "google_resource_name": existing.get("google_resource_name"),
+        "sources": existing.get("sources") or [],
+        "last_imported_at": existing.get("last_imported_at"),
+    }
+    row.update(patch)
+    return row
+
+
+def _google_channels(person: GooglePerson) -> Tuple[List[ImportedEmail], List[ImportedPhone]]:
+    emails = [
+        ImportedEmail(
+            email=item["email"],
+            label=item.get("label"),
+            is_primary=bool(item.get("is_primary")),
+        )
+        for item in person.emails
+    ]
+    phones = [
+        ImportedPhone(
+            phone=item["phone"],
+            label=item.get("label"),
+            is_primary=bool(item.get("is_primary")),
+        )
+        for item in person.phones
+    ]
+    return emails, phones
 
 
 class ContactsService:
@@ -207,11 +245,14 @@ class ContactsService:
             by_id[created["id"]] = created
             by_apple[item.apple_identifier] = created
 
-        for contact_id, patch in updates:
-            updated = self.repository.update_contact(user_id, contact_id, patch)
-            by_id[contact_id] = updated
-            if updated.get("apple_identifier"):
-                by_apple[updated["apple_identifier"]] = updated
+        if updates:
+            upsert_rows = [
+                _contact_upsert_row(by_id[contact_id], patch) for contact_id, patch in updates
+            ]
+            for updated in self.repository.upsert_contacts(upsert_rows):
+                by_id[updated["id"]] = updated
+                if updated.get("apple_identifier"):
+                    by_apple[updated["apple_identifier"]] = updated
 
         email_rows: List[Dict[str, Any]] = []
         phone_rows: List[Dict[str, Any]] = []
@@ -346,23 +387,25 @@ class ContactsService:
         connections_token = metadata.get(CONNECTIONS_SYNC_TOKEN_KEY)
         other_token = metadata.get(OTHER_CONTACTS_SYNC_TOKEN_KEY)
 
-        connections = await fetch_connections(access_token, connections_token)
-        if connections.stale_sync_token:
-            connections = await fetch_connections(access_token, None)
-        other = await fetch_other_contacts(access_token, other_token)
-        if other.stale_sync_token:
-            other = await fetch_other_contacts(access_token, None)
+        async def _fetch(fetch, token):
+            page = await fetch(access_token, token)
+            if page.stale_sync_token:
+                page = await fetch(access_token, None)
+            return page
 
-        people = list(connections.people) + list(other.people)
-        created = enriched = emails_added = phones_added = 0
-        for person in people:
-            was_new, added_e, added_p = self._upsert_google_person(user_id, person)
-            if was_new:
-                created += 1
-            else:
-                enriched += 1
-            emails_added += added_e
-            phones_added += added_p
+        connections, other = await asyncio.gather(
+            _fetch(fetch_connections, connections_token),
+            _fetch(fetch_other_contacts, other_token),
+        )
+
+        people_by_resource: Dict[str, GooglePerson] = {}
+        for person in list(connections.people) + list(other.people):
+            people_by_resource.setdefault(person.resource_name, person)
+        people = list(people_by_resource.values())
+
+        created, enriched, emails_added, phones_added = await asyncio.to_thread(
+            self._upsert_google_people, user_id, people
+        )
 
         if connections.next_sync_token:
             metadata[CONNECTIONS_SYNC_TOKEN_KEY] = connections.next_sync_token
@@ -370,102 +413,142 @@ class ContactsService:
             metadata[OTHER_CONTACTS_SYNC_TOKEN_KEY] = other.next_sync_token
         return created, enriched, emails_added, phones_added, metadata
 
-    def _upsert_google_person(
-        self, user_id: str, person: GooglePerson
-    ) -> Tuple[bool, int, int]:
-        emails = [
-            ImportedEmail(
-                email=item["email"],
-                label=item.get("label"),
-                is_primary=bool(item.get("is_primary")),
-            )
-            for item in person.emails
-        ]
-        phones = [
-            ImportedPhone(
-                phone=item["phone"],
-                label=item.get("label"),
-                is_primary=bool(item.get("is_primary")),
-            )
-            for item in person.phones
-        ]
-        e164s = [to_e164(phone.phone) for phone in phones]
-        e164s = [value for value in e164s if value]
+    def _upsert_google_people(
+        self, user_id: str, people: List[GooglePerson]
+    ) -> Tuple[int, int, int, int]:
+        self.repository.delete_contacts_without_apple(user_id)
+        if not people:
+            return 0, 0, 0, 0
 
-        named = self.repository.get_by_google_resource_names(user_id, [person.resource_name])
-        match = named[0] if named else None
-        if match is None and e164s:
-            phone_rows = self.repository.get_phones_by_e164(user_id, e164s)
-            if phone_rows:
-                found = self.repository.get_by_ids(user_id, [phone_rows[0]["contact_id"]])
-                match = found[0] if found else None
-        if match is None and emails:
-            email_rows = self.repository.get_emails(user_id, [email.email for email in emails])
-            if email_rows:
-                found = self.repository.get_by_ids(user_id, [email_rows[0]["contact_id"]])
-                match = found[0] if found else None
+        parsed: List[Tuple[GooglePerson, List[ImportedEmail], List[ImportedPhone]]] = []
+        resource_names: List[str] = []
+        emails_for_lookup: List[str] = []
+        e164s_for_lookup: List[str] = []
+        for person in people:
+            emails, phones = _google_channels(person)
+            parsed.append((person, emails, phones))
+            resource_names.append(person.resource_name)
+            emails_for_lookup.extend(email.email for email in emails)
+            for phone in phones:
+                parsed_e164 = to_e164(phone.phone)
+                if parsed_e164:
+                    e164s_for_lookup.append(parsed_e164)
+
+        by_google = {
+            row["google_resource_name"]: row
+            for row in self.repository.get_by_google_resource_names(user_id, resource_names)
+            if row.get("google_resource_name")
+        }
+        email_rows = self.repository.get_emails(user_id, emails_for_lookup)
+        phone_rows = self.repository.get_phones_by_e164(user_id, e164s_for_lookup)
+        contact_ids = list(
+            {
+                *[row["id"] for row in by_google.values()],
+                *[row["contact_id"] for row in email_rows],
+                *[row["contact_id"] for row in phone_rows],
+            }
+        )
+        by_id = {row["id"]: row for row in self.repository.get_by_ids(user_id, contact_ids)}
+        email_to_contact = {
+            row["email"]: by_id.get(row["contact_id"])
+            for row in email_rows
+            if row.get("contact_id") in by_id
+        }
+        e164_to_contact = {
+            row["phone_e164"]: by_id.get(row["contact_id"])
+            for row in phone_rows
+            if row.get("phone_e164") and row.get("contact_id") in by_id
+        }
+
+        existing_emails_by_contact: Dict[str, set[str]] = {}
+        existing_phones_by_contact: Dict[str, set[str]] = {}
+        for row in self.repository.get_emails_for_contacts(user_id, contact_ids):
+            existing_emails_by_contact.setdefault(row["contact_id"], set()).add(row["email"])
+        for row in self.repository.get_phones_for_contacts(user_id, contact_ids):
+            keys = existing_phones_by_contact.setdefault(row["contact_id"], set())
+            keys.add(row["phone_raw"])
+            if row.get("phone_e164"):
+                keys.add(row["phone_e164"])
 
         now = self.repository.utc_now_iso()
-        was_new = match is None
-        if match is None:
-            match = self.repository.insert_contact(
-                {
-                    "user_id": user_id,
-                    "given_name": person.given_name,
-                    "family_name": person.family_name,
-                    "nickname": person.nickname,
-                    "display_name": compute_display_name(
-                        person.given_name,
-                        person.family_name,
-                        person.nickname,
-                        [email.email for email in emails],
-                    ),
-                    "google_resource_name": person.resource_name,
-                    "sources": ["google"],
-                    "last_imported_at": now,
-                }
-            )
-        else:
+        claimed_resources = set(by_google.keys())
+        assignments: List[Tuple[List[ImportedEmail], List[ImportedPhone], Dict[str, Any]]] = []
+        updates: Dict[str, Dict[str, Any]] = {}
+        enriched = 0
+
+        for person, emails, phones in parsed:
+            match = by_google.get(person.resource_name)
+            if match is None:
+                for phone in phones:
+                    parsed_e164 = to_e164(phone.phone)
+                    if parsed_e164 and e164_to_contact.get(parsed_e164):
+                        match = e164_to_contact[parsed_e164]
+                        break
+            if match is None:
+                for email in emails:
+                    if email_to_contact.get(email.email):
+                        match = email_to_contact[email.email]
+                        break
+            if match is None:
+                continue
+
             patch: Dict[str, Any] = {
                 "sources": _add_source(match.get("sources"), "google"),
                 "last_imported_at": now,
             }
             existing_resource = match.get("google_resource_name")
-            if not existing_resource:
+            if not existing_resource and person.resource_name not in claimed_resources:
                 patch["google_resource_name"] = person.resource_name
-            elif existing_resource != person.resource_name:
-                # Another Google person is already linked; still add missing channels.
-                patch.pop("google_resource_name", None)
-            match = self.repository.update_contact(user_id, match["id"], patch)
+                claimed_resources.add(person.resource_name)
+            needs_source = "google" not in list(match.get("sources") or [])
+            needs_resource = "google_resource_name" in patch and existing_resource != patch.get(
+                "google_resource_name"
+            )
+            if needs_source or needs_resource:
+                updates[match["id"]] = {**updates.get(match["id"], {}), **patch}
+            for email in emails:
+                email_to_contact.setdefault(email.email, match)
+            for phone in phones:
+                parsed_e164 = to_e164(phone.phone)
+                if parsed_e164:
+                    e164_to_contact.setdefault(parsed_e164, match)
+            assignments.append((emails, phones, match))
+            enriched += 1
 
-        existing_emails = {
-            row["email"]
-            for row in self.repository.get_emails_for_contacts(user_id, [match["id"]])
-        }
-        existing_phones: set[str] = set()
-        for row in self.repository.get_phones_for_contacts(user_id, [match["id"]]):
-            existing_phones.add(row["phone_raw"])
-            if row.get("phone_e164"):
-                existing_phones.add(row["phone_e164"])
+        if updates:
+            upsert_rows = [_contact_upsert_row(by_id[contact_id], patch) for contact_id, patch in updates.items()]
+            for updated in self.repository.upsert_contacts(upsert_rows):
+                by_id[updated["id"]] = updated
+                if updated.get("google_resource_name"):
+                    by_google[updated["google_resource_name"]] = updated
 
-        email_rows: List[Dict[str, Any]] = []
-        phone_rows: List[Dict[str, Any]] = []
-        added_e, added_p = self._collect_channels(
-            user_id=user_id,
-            contact=match,
-            emails=emails,
-            phones=phones,
-            source="google",
-            existing_emails=existing_emails,
-            existing_phones=existing_phones,
-            email_to_contact={},
-            e164_to_contact={},
-            email_rows=email_rows,
-            phone_rows=phone_rows,
-        )
-        self.repository.insert_emails(email_rows)
-        self.repository.insert_phones(phone_rows)
-        return was_new, added_e, added_p
+        email_rows_out: List[Dict[str, Any]] = []
+        phone_rows_out: List[Dict[str, Any]] = []
+        emails_added = phones_added = 0
+        email_to_contact_out: Dict[str, Dict[str, Any] | None] = {}
+        e164_to_contact_out: Dict[str, Dict[str, Any] | None] = {}
+
+        for emails, phones, match in assignments:
+            contact = by_id.get(match["id"], match)
+            added_e, added_p = self._collect_channels(
+                user_id=user_id,
+                contact=contact,
+                emails=emails,
+                phones=phones,
+                source="google",
+                existing_emails=existing_emails_by_contact.setdefault(contact["id"], set()),
+                existing_phones=existing_phones_by_contact.setdefault(contact["id"], set()),
+                email_to_contact=email_to_contact_out,
+                e164_to_contact=e164_to_contact_out,
+                email_rows=email_rows_out,
+                phone_rows=phone_rows_out,
+            )
+            emails_added += added_e
+            phones_added += added_p
+
+        self.repository.insert_emails(email_rows_out)
+        self.repository.insert_phones(phone_rows_out)
+        return 0, enriched, emails_added, phones_added
 
     def _collect_channels(
         self,

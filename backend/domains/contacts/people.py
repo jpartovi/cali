@@ -156,7 +156,7 @@ async def fetch_connections(
     people: List[GooglePerson] = []
     page_token: str | None = None
     next_sync_token: str | None = None
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
             params: Dict[str, Any] = {
                 "personFields": PERSON_FIELDS,
@@ -187,7 +187,7 @@ async def fetch_other_contacts(
     people: List[GooglePerson] = []
     page_token: str | None = None
     next_sync_token: str | None = None
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         while True:
             params: Dict[str, Any] = {
                 "readMask": OTHER_CONTACTS_READ_MASK,

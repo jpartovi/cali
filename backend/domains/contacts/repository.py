@@ -193,6 +193,19 @@ class ContactsRepository:
             raise SupabaseStorageError(exc.message) from exc
         return inserted
 
+    def upsert_contacts(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
+        client = get_service_client()
+        upserted: List[Dict[str, Any]] = []
+        try:
+            for chunk in _row_chunks([_without_none(row) for row in rows]):
+                result = client.table("contacts").upsert(list(chunk), on_conflict="id").execute()
+                upserted.extend(result.data or [])
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return upserted
+
     def update_contact(self, user_id: str, contact_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         client = get_service_client()
         payload = _without_none(data)
@@ -274,6 +287,21 @@ class ContactsRepository:
                 raise SupabaseStorageError(exc.message) from exc
             inserted += len(result.data or [])
         return inserted
+
+    def delete_contacts_without_apple(self, user_id: str) -> int:
+        """Remove contacts that were not created from Apple."""
+        client = get_service_client()
+        try:
+            result = (
+                client.table("contacts")
+                .delete()
+                .eq("user_id", user_id)
+                .is_("apple_identifier", "null")
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return len(result.data or [])
 
     def list_contacts(self, user_id: str, limit: int = 200) -> List[Dict[str, Any]]:
         client = get_service_client()
