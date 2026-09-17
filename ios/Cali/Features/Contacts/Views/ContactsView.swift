@@ -7,7 +7,6 @@ import SwiftUI
 
 struct ContactsView: View {
     @StateObject private var viewModel = ContactsViewModel()
-    @StateObject private var coordinator = CalendarOAuthCoordinator()
 
     var body: some View {
         ScrollView {
@@ -22,7 +21,7 @@ struct ContactsView: View {
         .navigationTitle("Contacts")
         .toolbarTitleDisplayMode(.inline)
         .task {
-            await viewModel.importIfNeeded(using: coordinator)
+            await viewModel.importIfNeeded()
         }
         .alert("Contacts", isPresented: Binding(
             get: { viewModel.errorMessage != nil || viewModel.statusMessage != nil },
@@ -50,7 +49,7 @@ struct ContactsView: View {
             if viewModel.contacts.isEmpty == false {
                 contactsList
             } else if viewModel.isSyncing == false {
-                Text("No contacts yet. Sync to import from Apple and Google.")
+                Text("No contacts yet. Sync to import from Apple Contacts.")
                     .font(.subheadline)
                     .foregroundStyle(ColorPalette.Text.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -76,12 +75,10 @@ struct ContactsView: View {
                 .foregroundStyle(ColorPalette.Text.primary)
                 .lineLimit(1)
 
-            if let subtitle = subtitle(for: contact) {
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(ColorPalette.Text.secondary)
-                    .lineLimit(2)
-            }
+            Text(contact.inviteEmail ?? "No invite email")
+                .font(.subheadline)
+                .foregroundStyle(ColorPalette.Text.secondary)
+                .lineLimit(2)
         }
         .padding(.vertical, 18)
         .padding(.horizontal, 20)
@@ -96,21 +93,14 @@ struct ContactsView: View {
         )
     }
 
-    private func subtitle(for contact: ContactRecord) -> String? {
-        let email = contact.emails.first(where: { $0.isPrimary })?.email ?? contact.emails.first?.email
-        let phone = contact.phones.first(where: { $0.isPrimary })?.phoneRaw ?? contact.phones.first?.phoneRaw
-        let parts = [email, phone].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
     private var syncButton: some View {
         Button {
             Task {
-                await viewModel.sync(using: coordinator)
+                await viewModel.sync()
             }
         } label: {
             HStack(spacing: 10) {
-                if viewModel.isSyncing || viewModel.isLinking {
+                if viewModel.isSyncing {
                     ProgressView()
                         .progressViewStyle(.circular)
                         .tint(ColorPalette.Text.secondary)
@@ -120,7 +110,7 @@ struct ContactsView: View {
                         .imageScale(.medium)
                         .font(.system(size: 16, weight: .semibold))
                 }
-                Text(viewModel.isLinking ? "Connecting Google…" : viewModel.isSyncing ? "Syncing…" : "Sync contacts")
+                Text(viewModel.isSyncing ? "Syncing…" : "Sync contacts")
                     .font(.callout.weight(.semibold))
             }
             .padding(.vertical, 10)
@@ -137,7 +127,7 @@ struct ContactsView: View {
             .foregroundStyle(ColorPalette.Text.primary)
         }
         .buttonStyle(.plain)
-        .disabled(viewModel.isSyncing || viewModel.isLinking)
+        .disabled(viewModel.isSyncing)
         .accessibilityIdentifier("sync-contacts")
     }
 }

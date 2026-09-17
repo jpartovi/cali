@@ -6,25 +6,12 @@
 import Contacts
 import Foundation
 
-struct AppleImportedEmail: Codable, Sendable {
-    let email: String
-    let label: String?
-    let isPrimary: Bool
-}
-
-struct AppleImportedPhone: Codable, Sendable {
-    let phone: String
-    let label: String?
-    let isPrimary: Bool
-}
-
 struct AppleContactPayload: Codable, Sendable {
     let appleIdentifier: String
     let givenName: String?
     let familyName: String?
     let nickname: String?
-    let emails: [AppleImportedEmail]
-    let phones: [AppleImportedPhone]
+    let emails: [String]
 }
 
 enum AppleContactsReaderError: Error, Sendable {
@@ -70,35 +57,26 @@ enum AppleContactsReader {
             CNContactFamilyNameKey as CNKeyDescriptor,
             CNContactNicknameKey as CNKeyDescriptor,
             CNContactEmailAddressesKey as CNKeyDescriptor,
-            CNContactPhoneNumbersKey as CNKeyDescriptor,
         ]
         let request = CNContactFetchRequest(keysToFetch: keys)
         var payloads: [AppleContactPayload] = []
 
         do {
             try store.enumerateContacts(with: request) { contact, _ in
-                let emails = contact.emailAddresses.enumerated().compactMap { index, value -> AppleImportedEmail? in
-                    let email = (value.value as String).trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard email.isEmpty == false else { return nil }
-                    return AppleImportedEmail(
-                        email: email,
-                        label: localizedLabel(value.label),
-                        isPrimary: index == 0
-                    )
-                }
-                let phones = contact.phoneNumbers.enumerated().compactMap { index, value -> AppleImportedPhone? in
-                    let phone = value.value.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard phone.isEmpty == false else { return nil }
-                    return AppleImportedPhone(
-                        phone: phone,
-                        label: localizedLabel(value.label),
-                        isPrimary: index == 0
-                    )
+                var emails: [String] = []
+                var seen: Set<String> = []
+                for value in contact.emailAddresses {
+                    let email = (value.value as String)
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .lowercased()
+                    guard email.isEmpty == false, seen.contains(email) == false else { continue }
+                    seen.insert(email)
+                    emails.append(email)
                 }
                 let given = nonempty(contact.givenName)
                 let family = nonempty(contact.familyName)
                 let nickname = nonempty(contact.nickname)
-                guard given != nil || family != nil || nickname != nil || emails.isEmpty == false || phones.isEmpty == false else {
+                guard given != nil || family != nil || nickname != nil || emails.isEmpty == false else {
                     return
                 }
                 payloads.append(
@@ -107,8 +85,7 @@ enum AppleContactsReader {
                         givenName: given,
                         familyName: family,
                         nickname: nickname,
-                        emails: emails,
-                        phones: phones
+                        emails: emails
                     )
                 )
             }
@@ -122,11 +99,5 @@ enum AppleContactsReader {
     nonisolated private static func nonempty(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
-    }
-
-    nonisolated private static func localizedLabel(_ label: String?) -> String? {
-        guard let label, label.isEmpty == false else { return nil }
-        let localized = CNLabeledValue<NSString>.localizedString(forLabel: label)
-        return localized.isEmpty ? label : localized
     }
 }

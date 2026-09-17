@@ -34,8 +34,6 @@ logger = logging.getLogger(__name__)
 # Scopes required when constructing Google API credentials (must cover granted OAuth scopes)
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/contacts.readonly",
-    "https://www.googleapis.com/auth/contacts.other.readonly",
 ]
 
 STATE_AUDIENCE = "google-oauth-state"

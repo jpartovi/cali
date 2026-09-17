@@ -14,57 +14,22 @@ struct AppleContactsImportRequest: Encodable {
 
 struct AppleContactsImportResponse: Decodable {
     let imported: Int
-    let merged: Int
-    let emailsAdded: Int
-    let phonesAdded: Int
-}
-
-struct GoogleContactsAccountImportResult: Decodable {
-    let accountId: String
-    let email: String?
-    let created: Int
-    let enriched: Int
-    let emailsAdded: Int
-    let phonesAdded: Int
-    let needsReauth: Bool
-    let error: String?
-}
-
-struct GoogleContactsImportResponse: Decodable {
-    let accounts: [GoogleContactsAccountImportResult]
-    let needsReauth: Bool
-    let needsReauthAccountIds: [String]
-}
-
-struct ContactEmailRecord: Decodable, Hashable, Sendable {
-    let email: String
-    let label: String?
-    let isPrimary: Bool
-    let source: String
-}
-
-struct ContactPhoneRecord: Decodable, Hashable, Sendable {
-    let phoneRaw: String
-    let phoneE164: String?
-    let label: String?
-    let isPrimary: Bool
-    let source: String
+    let updated: Int
 }
 
 struct ContactRecord: Identifiable, Decodable, Hashable, Sendable {
     let id: String
+    let appleIdentifier: String
     let displayName: String
     let givenName: String?
     let familyName: String?
     let nickname: String?
-    let emails: [ContactEmailRecord]
-    let phones: [ContactPhoneRecord]
+    let inviteEmail: String?
 }
 
 enum ContactsServiceError: Error {
     case invalidURL
     case unauthorized
-    case needsReauth(GoogleContactsImportResponse)
     case http(Int)
     case decoding(Error)
     case network(Error)
@@ -72,7 +37,6 @@ enum ContactsServiceError: Error {
 
 protocol ContactsServicing {
     func importAppleContacts(accessToken: String, contacts: [AppleContactPayload]) async throws -> AppleContactsImportResponse
-    func importGoogleContacts(accessToken: String) async throws -> GoogleContactsImportResponse
     func listContacts(accessToken: String) async throws -> [ContactRecord]
 }
 
@@ -103,12 +67,10 @@ final class ContactsService: ContactsServicing {
 
     func importAppleContacts(accessToken: String, contacts: [AppleContactPayload]) async throws -> AppleContactsImportResponse {
         var imported = 0
-        var merged = 0
-        var emailsAdded = 0
-        var phonesAdded = 0
+        var updated = 0
 
         if contacts.isEmpty {
-            return AppleContactsImportResponse(imported: 0, merged: 0, emailsAdded: 0, phonesAdded: 0)
+            return AppleContactsImportResponse(imported: 0, updated: 0)
         }
 
         for chunk in stride(from: 0, to: contacts.count, by: chunkSize) {
@@ -120,29 +82,11 @@ final class ContactsService: ContactsServicing {
                 body: AppleContactsImportRequest(contacts: slice)
             )
             imported += response.imported
-            merged += response.merged
-            emailsAdded += response.emailsAdded
-            phonesAdded += response.phonesAdded
+            updated += response.updated
         }
 
-        contactsLogger.debug("Apple import imported=\(imported, privacy: .public) merged=\(merged, privacy: .public)")
-        return AppleContactsImportResponse(
-            imported: imported,
-            merged: merged,
-            emailsAdded: emailsAdded,
-            phonesAdded: phonesAdded
-        )
-    }
-
-    func importGoogleContacts(accessToken: String) async throws -> GoogleContactsImportResponse {
-        let response: GoogleContactsImportResponse = try await postEmpty(
-            path: "/api/v1/contacts/import/google",
-            accessToken: accessToken
-        )
-        if response.needsReauth {
-            throw ContactsServiceError.needsReauth(response)
-        }
-        return response
+        contactsLogger.debug("Apple import imported=\(imported, privacy: .public) updated=\(updated, privacy: .public)")
+        return AppleContactsImportResponse(imported: imported, updated: updated)
     }
 
     func listContacts(accessToken: String) async throws -> [ContactRecord] {
@@ -152,11 +96,6 @@ final class ContactsService: ContactsServicing {
     private func getJSON<Response: Decodable>(path: String, accessToken: String) async throws -> Response {
         var request = try makeRequest(path: path, accessToken: accessToken, method: "GET")
         request.setValue(nil, forHTTPHeaderField: "Content-Type")
-        return try await decodeResponse(request: request)
-    }
-
-    private func postEmpty<Response: Decodable>(path: String, accessToken: String) async throws -> Response {
-        let request = try makeRequest(path: path, accessToken: accessToken, method: "POST")
         return try await decodeResponse(request: request)
     }
 
