@@ -27,12 +27,25 @@ class AppleContactImport(BaseModel):
 
 
 class AppleImportRequest(BaseModel):
-    contacts: list[AppleContactImport] = Field(..., max_length=250)
+    contacts: list[AppleContactImport] = Field(default_factory=list, max_length=250)
+    replace: bool = False
+    kept_identifiers: list[str] = Field(default_factory=list, max_length=10000)
+
+    @field_validator("kept_identifiers")
+    @classmethod
+    def normalize_kept_identifiers(cls, value: list[str]) -> list[str]:
+        seen: list[str] = []
+        for raw in value:
+            identifier = raw.strip()
+            if identifier and identifier not in seen:
+                seen.append(identifier)
+        return seen
 
 
 class AppleImportResponse(BaseModel):
     imported: int
     updated: int
+    deleted: int = 0
 
 
 class ContactResponse(BaseModel):

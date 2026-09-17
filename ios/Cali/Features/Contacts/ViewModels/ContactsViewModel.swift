@@ -88,7 +88,7 @@ final class ContactsViewModel: ObservableObject {
                 contacts: appleContacts
             )
             UserDefaults.standard.set(true, forKey: Self.didImportContactsKey)
-            statusMessage = "Imported \(appleResult.imported + appleResult.updated) contacts from Apple."
+            statusMessage = "Added \(appleResult.imported), updated \(appleResult.updated), removed \(appleResult.deleted)."
             await loadContacts()
         } catch ContactsServiceError.unauthorized {
             errorMessage = "We couldn't access your account. Please sign in again."

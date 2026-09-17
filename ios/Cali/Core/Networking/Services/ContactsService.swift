@@ -10,11 +10,14 @@ private let contactsLogger = Logger(subsystem: "com.cali.app", category: "Contac
 
 struct AppleContactsImportRequest: Encodable {
     let contacts: [AppleContactPayload]
+    let replace: Bool
+    let keptIdentifiers: [String]
 }
 
 struct AppleContactsImportResponse: Decodable {
     let imported: Int
     let updated: Int
+    let deleted: Int
 }
 
 struct ContactRecord: Identifiable, Decodable, Hashable, Sendable {
@@ -66,27 +69,42 @@ final class ContactsService: ContactsServicing {
     }
 
     func importAppleContacts(accessToken: String, contacts: [AppleContactPayload]) async throws -> AppleContactsImportResponse {
+        let keptIdentifiers = contacts.map(\.appleIdentifier)
         var imported = 0
         var updated = 0
+        var deleted = 0
 
         if contacts.isEmpty {
-            return AppleContactsImportResponse(imported: 0, updated: 0)
+            return try await postJSON(
+                path: "/api/v1/contacts/import/apple",
+                accessToken: accessToken,
+                body: AppleContactsImportRequest(contacts: [], replace: true, keptIdentifiers: [])
+            )
         }
 
+        let lastStart = ((contacts.count - 1) / chunkSize) * chunkSize
         for chunk in stride(from: 0, to: contacts.count, by: chunkSize) {
             let end = min(chunk + chunkSize, contacts.count)
             let slice = Array(contacts[chunk..<end])
+            let isLast = chunk == lastStart
             let response: AppleContactsImportResponse = try await postJSON(
                 path: "/api/v1/contacts/import/apple",
                 accessToken: accessToken,
-                body: AppleContactsImportRequest(contacts: slice)
+                body: AppleContactsImportRequest(
+                    contacts: slice,
+                    replace: isLast,
+                    keptIdentifiers: isLast ? keptIdentifiers : []
+                )
             )
             imported += response.imported
             updated += response.updated
+            deleted += response.deleted
         }
 
-        contactsLogger.debug("Apple import imported=\(imported, privacy: .public) updated=\(updated, privacy: .public)")
-        return AppleContactsImportResponse(imported: imported, updated: updated)
+        contactsLogger.debug(
+            "Apple import imported=\(imported, privacy: .public) updated=\(updated, privacy: .public) deleted=\(deleted, privacy: .public)"
+        )
+        return AppleContactsImportResponse(imported: imported, updated: updated, deleted: deleted)
     }
 
     func listContacts(accessToken: String) async throws -> [ContactRecord] {

@@ -94,6 +94,51 @@ class ContactsRepository:
             raise SupabaseStorageError(exc.message) from exc
         return result.data or []
 
+    def list_apple_identifiers(self, user_id: str) -> List[str]:
+        client = get_service_client()
+        identifiers: List[str] = []
+        page_size = 1000
+        offset = 0
+        try:
+            while True:
+                result = (
+                    client.table("contacts")
+                    .select("apple_identifier")
+                    .eq("user_id", user_id)
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+                rows = result.data or []
+                for row in rows:
+                    identifier = row.get("apple_identifier")
+                    if identifier:
+                        identifiers.append(identifier)
+                if len(rows) < page_size:
+                    break
+                offset += page_size
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return identifiers
+
+    def delete_by_apple_identifiers(self, user_id: str, identifiers: Sequence[str]) -> int:
+        if not identifiers:
+            return 0
+        client = get_service_client()
+        deleted = 0
+        try:
+            for chunk in _chunks(list(dict.fromkeys(identifiers))):
+                result = (
+                    client.table("contacts")
+                    .delete()
+                    .eq("user_id", user_id)
+                    .in_("apple_identifier", list(chunk))
+                    .execute()
+                )
+                deleted += len(result.data or [])
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return deleted
+
     @staticmethod
     def utc_now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()

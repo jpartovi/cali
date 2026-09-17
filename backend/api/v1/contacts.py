@@ -27,7 +27,13 @@ async def import_apple_contacts(
 ) -> AppleImportResponse:
     service = ContactsService()
     try:
-        return await asyncio.to_thread(service.import_apple, current_user.id, payload.contacts)
+        return await asyncio.to_thread(
+            service.import_apple,
+            current_user.id,
+            payload.contacts,
+            replace=payload.replace,
+            kept_identifiers=payload.kept_identifiers,
+        )
     except SupabaseStorageError as exc:
         logger.error("Apple contact import failed user_id=%s: %s", current_user.id, exc)
         raise HTTPException(

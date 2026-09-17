@@ -56,7 +56,14 @@ class ContactsService:
     def __init__(self, repository: ContactsRepository | None = None) -> None:
         self.repository = repository or ContactsRepository()
 
-    def import_apple(self, user_id: str, contacts: List[AppleContactImport]) -> AppleImportResponse:
+    def import_apple(
+        self,
+        user_id: str,
+        contacts: List[AppleContactImport],
+        *,
+        replace: bool = False,
+        kept_identifiers: Sequence[str] | None = None,
+    ) -> AppleImportResponse:
         imported = 0
         updated = 0
         apple_ids = [item.apple_identifier for item in contacts]
@@ -92,14 +99,25 @@ class ContactsService:
                 continue
             if _row_needs_update(existing, payload):
                 upsert_rows.append({"id": existing["id"], **payload})
-            updated += 1
+                updated += 1
 
         if new_payloads:
             self.repository.insert_contacts(new_payloads)
         if upsert_rows:
             self.repository.upsert_contacts(upsert_rows)
 
-        return AppleImportResponse(imported=imported, updated=updated)
+        deleted = 0
+        if replace:
+            keep = {
+                identifier
+                for identifier in (list(kept_identifiers) if kept_identifiers else apple_ids)
+                if identifier
+            }
+            existing_ids = self.repository.list_apple_identifiers(user_id)
+            stale = [identifier for identifier in existing_ids if identifier not in keep]
+            deleted = self.repository.delete_by_apple_identifiers(user_id, stale)
+
+        return AppleImportResponse(imported=imported, updated=updated, deleted=deleted)
 
     def list_contacts(self, user_id: str) -> List[ContactResponse]:
         return [self._to_response(row) for row in self.repository.list_contacts(user_id)]
