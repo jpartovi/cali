@@ -48,36 +48,59 @@ final class CalendarAccountsViewModel: ObservableObject {
             return
         }
 
-        isLoading = true
-        defer { isLoading = false }
+        let shouldShowSpinner = accounts.isEmpty
+        if shouldShowSpinner {
+            isLoading = true
+        }
 
         guard let accessToken = await currentAccessToken() else {
+            isLoading = false
             errorMessage = "We couldn't load your calendars because your session is unavailable."
             return
         }
 
         do {
-            // Refresh calendars from Google API on first load or when forced
-            // This ensures calendar metadata is up-to-date in Supabase
-            if !hasLoaded || force {
-                try await calendarService.refreshCalendars(accessToken: accessToken)
-            }
-            
-            // Fetch calendars from Supabase (now up-to-date after refresh)
+            // Show accounts already stored for this user before talking to Google.
+            // The previous refresh-first flow often timed out, leaving this page empty
+            // even though the calendar view still had events.
             let fetched = try await calendarService.fetchCalendars(accessToken: accessToken)
             accounts = fetched
             errorMessage = nil
             hasLoaded = true
         } catch let serviceError as CalendarServiceError {
-            switch serviceError {
-            case .unauthorized:
-                // Supabase should auto-refresh, but if we still get 401, session is invalid
-                errorMessage = "We couldn't access your calendars. Please sign in again."
-            default:
+            isLoading = false
+            if accounts.isEmpty {
+                errorMessage = message(for: serviceError)
+            }
+            return
+        } catch {
+            isLoading = false
+            if accounts.isEmpty {
                 errorMessage = "We couldn't load your calendars. Please try again later."
             }
+            return
+        }
+
+        isLoading = false
+
+        guard !accounts.isEmpty || force else { return }
+
+        do {
+            try await calendarService.refreshCalendars(accessToken: accessToken)
+            let fetched = try await calendarService.fetchCalendars(accessToken: accessToken)
+            accounts = fetched
+            errorMessage = nil
         } catch {
-            errorMessage = "We couldn't load your calendars. Please try again later."
+            // Keep the already-loaded accounts visible if Google refresh fails.
+        }
+    }
+
+    private func message(for serviceError: CalendarServiceError) -> String {
+        switch serviceError {
+        case .unauthorized:
+            return "We couldn't access your calendars. Please sign in again."
+        default:
+            return "We couldn't load your calendars. Please try again later."
         }
     }
 

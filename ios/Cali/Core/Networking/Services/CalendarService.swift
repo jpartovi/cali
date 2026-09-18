@@ -54,10 +54,7 @@ final class CalendarService: CalendarServicing {
             }
 
             do {
-                let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
-                decoder.dateDecodingStrategy = .iso8601
-                let accounts = try decoder.decode([GoogleAccount].self, from: data)
+                let accounts = try makeDecoder().decode([GoogleAccount].self, from: data)
                 calendarLogger.debug("✅ Loaded \(accounts.count, privacy: .public) calendars")
                 return accounts
             } catch {
@@ -122,9 +119,7 @@ final class CalendarService: CalendarServicing {
             }
 
             do {
-                let decoder = JSONDecoder()
-                decoder.dateDecodingStrategy = .iso8601
-                let start = try decoder.decode(GoogleOAuthStart.self, from: data)
+                let start = try makeDecoder(convertFromSnakeCase: false).decode(GoogleOAuthStart.self, from: data)
                 calendarLogger.debug("✅ Received Google OAuth URL with state that expires at \(start.stateExpiresAt.timeIntervalSince1970, privacy: .public)")
                 return start
             } catch {
@@ -198,10 +193,7 @@ final class CalendarService: CalendarServicing {
             }
 
             do {
-                let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
-                decoder.dateDecodingStrategy = .iso8601
-                let calendar = try decoder.decode(GoogleCalendar.self, from: data)
+                let calendar = try makeDecoder().decode(GoogleCalendar.self, from: data)
                 calendarLogger.debug("✅ Updated calendar: \(calendarId, privacy: .public) isHidden=\(isHidden)")
                 return calendar
             } catch {
@@ -247,10 +239,7 @@ final class CalendarService: CalendarServicing {
             }
 
             do {
-                let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
-                decoder.dateDecodingStrategy = .iso8601
-                let createResponse = try decoder.decode(CalendarCreateEventResponse.self, from: data)
+                let createResponse = try makeDecoder().decode(CalendarCreateEventResponse.self, from: data)
                 calendarLogger.debug("✅ Created event: \(request.summary, privacy: .public)")
                 return createResponse
             } catch {
@@ -331,10 +320,7 @@ final class CalendarService: CalendarServicing {
             }
 
             do {
-                let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
-                decoder.dateDecodingStrategy = .iso8601
-                let event = try decoder.decode(CalendarEvent.self, from: data)
+                let event = try makeDecoder().decode(CalendarEvent.self, from: data)
                 calendarLogger.debug("✅ Fetched event: \(eventId, privacy: .public)")
                 return event
             } catch {
@@ -387,10 +373,7 @@ final class CalendarService: CalendarServicing {
             }
 
             do {
-                let decoder = JSONDecoder()
-                decoder.keyDecodingStrategy = .convertFromSnakeCase
-                decoder.dateDecodingStrategy = .iso8601
-                let updateResponse = try decoder.decode(CalendarUpdateEventResponse.self, from: data)
+                let updateResponse = try makeDecoder().decode(CalendarUpdateEventResponse.self, from: data)
                 calendarLogger.debug("✅ Updated event \(eventId, privacy: .public)")
                 return updateResponse
             } catch {
@@ -408,6 +391,15 @@ final class CalendarService: CalendarServicing {
 }
 
 private extension CalendarService {
+    func makeDecoder(convertFromSnakeCase: Bool = true) -> JSONDecoder {
+        let decoder = JSONDecoder()
+        if convertFromSnakeCase {
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+        }
+        decoder.dateDecodingStrategy = ISO8601DateParser.jsonStrategy
+        return decoder
+    }
+
     func makeRequest(path: String, accessToken: String, method: String) throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             calendarLogger.error("❌ Invalid URL for calendars endpoint: \(path, privacy: .public)")

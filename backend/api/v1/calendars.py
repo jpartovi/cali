@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Dict
 
+from pydantic import ValidationError
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Response, status
 from fastapi.responses import RedirectResponse
 
@@ -67,11 +68,34 @@ async def list_accounts(
             account_id = account_row["id"]
             # Fetch calendars for this account - include hidden calendars so users can toggle visibility
             calendar_rows = repository.get_calendars_by_account(account_id, include_hidden=True)
-            calendars = [CalendarResponse(**cal) for cal in calendar_rows] if calendar_rows else []
-            # Create account response with calendars
+            calendars = []
+            for cal in calendar_rows or []:
+                try:
+                    calendars.append(CalendarResponse(**cal))
+                except ValidationError:
+                    logger.warning(
+                        "Skipping invalid calendar row id=%s account=%s",
+                        cal.get("id"),
+                        account_id,
+                    )
+            # Create account response with calendars. Tokens stay server-side.
             account_dict = dict(account_row)
+            account_dict.pop("access_token", None)
+            account_dict.pop("refresh_token", None)
             account_dict["calendars"] = calendars
-            accounts.append(GoogleAccountResponse(**account_dict))
+            try:
+                accounts.append(GoogleAccountResponse(**account_dict))
+            except ValidationError:
+                logger.warning(
+                    "Skipping invalid Google account row id=%s user=%s",
+                    account_id,
+                    current_user.id,
+                )
+        if account_rows and not accounts:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to load calendar accounts.",
+            )
     except SupabaseStorageError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)
@@ -82,6 +106,7 @@ async def list_accounts(
 
 @router.post("/accounts/refresh")
 async def refresh_calendars(
+    background_tasks: BackgroundTasks,
     current_user: AuthenticatedUser = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """Refresh calendars from Google API and sync to Supabase.
@@ -95,9 +120,11 @@ async def refresh_calendars(
     service = CalendarService()
     try:
         service_start = time.time()
-        await service.hydrate_calendars(current_user.id)
+        await service.hydrate_calendars(current_user.id, sync_watches=False)
         service_duration = time.time() - service_start
         log_step("backend.api.calendars.refresh_calendars.service", service_duration)
+
+        background_tasks.add_task(_bootstrap_user_calendar_listeners, current_user.id)
         
         endpoint_duration = time.time() - endpoint_start
         log_step("backend.api.calendars.refresh_calendars", endpoint_duration)
@@ -631,3 +658,17 @@ async def _bootstrap_calendar_listener(user_id: str, account_id: str) -> None:
             user_id,
             account_id,
         )
+
+
+async def _bootstrap_user_calendar_listeners(user_id: str) -> None:
+    repository = CalendarRepository()
+    try:
+        accounts = repository.get_accounts(user_id)
+    except Exception:
+        logger.exception("Failed to list accounts while bootstrapping watches user=%s", user_id)
+        return
+
+    for account in accounts:
+        account_id = account.get("id")
+        if account_id:
+            await _bootstrap_calendar_listener(user_id, account_id)

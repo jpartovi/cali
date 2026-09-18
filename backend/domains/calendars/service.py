@@ -935,7 +935,7 @@ class CalendarService:
         method_duration = time_module.time() - method_start
         log_step("backend.calendar_service._hydrate_calendars", method_duration, details=f"contexts={len(contexts)}")
 
-    async def hydrate_calendars(self, user_id: str) -> None:
+    async def hydrate_calendars(self, user_id: str, *, sync_watches: bool = True) -> None:
         """Public method to refresh calendars from Google API and sync to Supabase.
         
         This is called by the refresh endpoint when the calendar accounts page is visited.
@@ -943,6 +943,8 @@ class CalendarService:
         
         Args:
             user_id: User ID to refresh calendars for
+            sync_watches: When True, also bootstrap Google push watches. The accounts
+                page skips this so listing accounts is not blocked on a full event sync.
         """
         method_start = time_module.time()
         log_start("backend.calendar_service.hydrate_calendars", details=f"user_id={user_id}")
@@ -953,16 +955,17 @@ class CalendarService:
         # Hydrate calendars (fetch from Google and sync to Supabase)
         await self._hydrate_calendars(contexts)
         
-        try:
-            from domains.calendar_listener.service import CalendarListenerService
+        if sync_watches:
+            try:
+                from domains.calendar_listener.service import CalendarListenerService
 
-            listener = CalendarListenerService()
-            for context in contexts:
-                account_id = context.id
-                if account_id:
-                    await listener.bootstrap_account(user_id, account_id)
-        except Exception:
-            logger.exception("Failed to sync calendar watches after hydrate user=%s", user_id)
+                listener = CalendarListenerService()
+                for context in contexts:
+                    account_id = context.id
+                    if account_id:
+                        await listener.bootstrap_account(user_id, account_id)
+            except Exception:
+                logger.exception("Failed to sync calendar watches after hydrate user=%s", user_id)
         
         method_duration = time_module.time() - method_start
         log_step("backend.calendar_service.hydrate_calendars", method_duration, details=f"user_id={user_id} contexts={len(contexts)}")

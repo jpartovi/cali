@@ -143,6 +143,13 @@ private extension CalendarAccountsView {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 40)
         } else {
+            if let errorMessage = viewModel.errorMessage, viewModel.accounts.isEmpty {
+                Text(errorMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(ColorPalette.Semantic.destructive)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             if !viewModel.accounts.isEmpty {
                 accountsList
             }

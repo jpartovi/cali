@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Discriminator, Field, HttpUrl, Tag, model_serializer, model_validator
+from pydantic import BaseModel, Discriminator, Field, HttpUrl, Tag, field_validator, model_serializer, model_validator
 
 
 # Google Account schemas
@@ -59,6 +59,18 @@ class CalendarResponse(BaseModel):
     google_account_id: str
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def default_name(cls, value: Any) -> str:
+        if isinstance(value, str) and value.strip():
+            return value
+        return "Untitled calendar"
+
+    @field_validator("is_primary", "is_hidden", mode="before")
+    @classmethod
+    def default_bool(cls, value: Any) -> bool:
+        return bool(value) if value is not None else False
 
 
 class CalendarUpdate(BaseModel):
