@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     supabase_url: str
     supabase_service_role_key: str
     supabase_jwt_secret: str | None = None
+    # When set, phone login accepts this code and does not send an SMS.
+    auth_dev_otp_code: str | None = None
 
     # Google OAuth configuration
     google_client_id: str | None = None

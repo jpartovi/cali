@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import hmac
+import logging
+import secrets
 from typing import Any, Dict, Tuple
 
+import httpx
 from postgrest import APIError
 
+from core.config import get_settings
 from db.session import get_service_client
 from utils.errors import SupabaseAuthError, SupabaseStorageError
+
+logger = logging.getLogger(__name__)
 
 
 def _model_dump(obj: Any) -> Dict[str, Any]:
@@ -30,6 +37,10 @@ class AuthRepository:
 
     def send_phone_otp(self, phone: str) -> None:
         """Send phone OTP."""
+        if _dev_otp_code():
+            logger.warning("Skipping SMS OTP because AUTH_DEV_OTP_CODE is set")
+            return
+
         client = get_service_client()
         try:
             client.auth.sign_in_with_otp({"phone": phone})
@@ -38,6 +49,12 @@ class AuthRepository:
 
     def verify_phone_otp(self, phone: str, token: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Verify phone OTP and return session and user."""
+        dev_code = _dev_otp_code()
+        if dev_code:
+            if not hmac.compare_digest(token.encode(), dev_code.encode()):
+                raise SupabaseAuthError("Invalid OTP code")
+            return self._dev_phone_session(phone)
+
         client = get_service_client()
         try:
             response = client.auth.verify_otp(
@@ -52,6 +69,32 @@ class AuthRepository:
         if not session or not user:
             raise SupabaseAuthError("Supabase did not return a valid session or user.")
 
+        return session, user
+
+    def _dev_phone_session(self, phone: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Issue a real Supabase session without sending an SMS."""
+        client = get_service_client()
+        password = secrets.token_urlsafe(24)
+        try:
+            existing = _find_user_by_phone(client, phone)
+            if existing is None:
+                created = client.auth.admin.create_user(
+                    {"phone": phone, "password": password, "phone_confirm": True}
+                )
+                user_id = created.user.id
+            else:
+                user_id = existing.id
+                client.auth.admin.update_user_by_id(
+                    user_id,
+                    {"password": password, "phone_confirm": True},
+                )
+            session, user = _sign_in_with_phone_password(phone, password)
+        except SupabaseAuthError:
+            raise
+        except Exception as exc:  # pragma: no cover - supabase raises dynamic errors
+            raise SupabaseAuthError(str(exc)) from exc
+
+        logger.warning("Dev OTP bypass signed in phone %s", _digits(phone))
         return session, user
 
     def refresh_session(self, refresh_token: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -137,3 +180,58 @@ class AuthRepository:
             raise SupabaseAuthError("User not found")
 
         return result.data[0]
+
+
+def _dev_otp_code() -> str | None:
+    code = (get_settings().auth_dev_otp_code or "").strip()
+    return code or None
+
+
+def _digits(value: str) -> str:
+    return "".join(ch for ch in value if ch.isdigit())
+
+
+def _find_user_by_phone(client: Any, phone: str) -> Any | None:
+    target = _digits(phone)
+    page = 1
+    per_page = 200
+    while page <= 20:
+        users = client.auth.admin.list_users(page=page, per_page=per_page)
+        for user in users:
+            if _digits(user.phone or "") == target:
+                return user
+        if len(users) < per_page:
+            return None
+        page += 1
+    return None
+
+
+def _sign_in_with_phone_password(phone: str, password: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Password grant on a throwaway request so the service client keeps its key."""
+    settings = get_settings()
+    key = settings.supabase_service_role_key.strip()
+    response = httpx.post(
+        f"{settings.supabase_url.rstrip('/')}/auth/v1/token",
+        params={"grant_type": "password"},
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json={"phone": phone, "password": password},
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        raise SupabaseAuthError(f"Dev OTP sign-in failed: {response.text[:300]}")
+
+    payload = response.json()
+    session = {
+        "access_token": payload.get("access_token"),
+        "refresh_token": payload.get("refresh_token"),
+        "token_type": payload.get("token_type", "bearer"),
+        "expires_in": payload.get("expires_in"),
+    }
+    user = payload.get("user") or {}
+    if not session["access_token"] or not user.get("id"):
+        raise SupabaseAuthError("Supabase did not return a valid session or user.")
+    return session, user
