@@ -21,6 +21,7 @@ from agent.schemas.agent_response import (
     UpdateEventMetadata,
     DeleteEventResponse,
     DeleteEventMetadata,
+    EventAttendee,
     NoActionResponse,
     NoActionMetadata,
 )
@@ -43,6 +44,16 @@ def _optional(value: Optional[str]) -> Optional[str]:
     if not any(ch.isalnum() for ch in text) or text.lower() in _PLACEHOLDER_WORDS:
         return None
     return text
+
+
+def _attendees(emails: Optional[List[str]]) -> List[EventAttendee]:
+    """Guest emails from a tool call, cleaned and de-duplicated (placeholders dropped)."""
+    seen: List[str] = []
+    for raw in emails or []:
+        email = (_optional(raw) or "").lower()
+        if "@" in email and email not in seen:
+            seen.append(email)
+    return [EventAttendee(email=email) for email in seen]
 
 # Context variable to store auth for tools (set during tool execution)
 import contextvars
@@ -330,6 +341,7 @@ def request_create_event(
     end_date: str = None,
     description: str = None,
     location: str = None,
+    attendee_emails: List[str] = None,
 ) -> Dict[str, Any]:
     """
     Request to create a new event. This terminates the agent.
@@ -353,6 +365,8 @@ def request_create_event(
                  Note: End date is exclusive (represents the day after the event ends).
         description: Optional description of the event. Only include if explicitly requested or necessary.
         location: Optional location for the event
+        attendee_emails: Optional emails of people to invite (they get a Google Calendar invite).
+                 Use emails from the PEOPLE IN THIS REQUEST section, or ones the user said outright.
     
     Returns:
         Dict with type "create-event" and metadata
@@ -381,6 +395,7 @@ def request_create_event(
             calendar_id=calendar_id,
             description=description,
             location=location,
+            attendees=_attendees(attendee_emails),
         )
     else:
         # Parse datetime strings to datetime objects for timed events
@@ -394,6 +409,7 @@ def request_create_event(
             calendar_id=calendar_id,
             description=description,
             location=location,
+            attendees=_attendees(attendee_emails),
         )
     
     response = CreateEventResponse(metadata=metadata)
@@ -411,6 +427,8 @@ def request_update_event(
     end_date: str = None,
     description: str = None,
     location: str = None,
+    add_attendee_emails: List[str] = None,
+    remove_attendee_emails: List[str] = None,
 ) -> Dict[str, Any]:
     """
     Request to update an existing event. This terminates the agent.
@@ -435,6 +453,10 @@ def request_update_event(
                  Note: End date is exclusive (represents the day after the event ends).
         description: Optional new description. Only include if explicitly requested or necessary.
         location: Optional new location
+        add_attendee_emails: Optional emails of people to invite to the event (they get an invite).
+        remove_attendee_emails: Optional emails of guests to take off the event (they get a notice).
+                 Use emails from the PEOPLE IN THIS REQUEST section, or ones the user said outright.
+                 Leave both out to keep the guest list as it is.
     
     Returns:
         Dict with type "update-event" and metadata
@@ -475,6 +497,8 @@ def request_update_event(
         end=end_dt,
         description=description,
         location=location,
+        add_attendees=_attendees(add_attendee_emails),
+        remove_attendees=_attendees(remove_attendee_emails),
     )
     
     response = UpdateEventResponse(metadata=metadata)

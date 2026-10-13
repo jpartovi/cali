@@ -65,6 +65,12 @@ class ShowScheduleResponse(BaseModel):
     query: str = ""
 
 
+class EventAttendee(BaseModel):
+    """A guest to invite to (or take off) an event."""
+    email: str
+    display_name: Optional[str] = None
+
+
 class CreateEventMetadata(BaseModel):
     summary: str
     start: DateTimeDict
@@ -72,6 +78,7 @@ class CreateEventMetadata(BaseModel):
     calendar_id: str
     description: Optional[str] = None
     location: Optional[str] = None
+    attendees: list[EventAttendee] = Field(default_factory=list)
 
 
 class CreateEventResponse(BaseModel):
@@ -89,6 +96,8 @@ class UpdateEventMetadata(BaseModel):
     end: Optional[DateTimeDict] = None
     description: Optional[str] = None
     location: Optional[str] = None
+    add_attendees: list[EventAttendee] = Field(default_factory=list)
+    remove_attendees: list[EventAttendee] = Field(default_factory=list)
 
 
 class UpdateEventResponse(BaseModel):

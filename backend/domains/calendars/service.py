@@ -20,6 +20,7 @@ from domains.calendars.providers.google import (
 from domains.calendars.repository import CalendarRepository
 from domains.calendars.schemas import (
     AllDayEventTime,
+    EventAttendeeInput,
     EventTime,
     TimedEventTime,
 )
@@ -64,6 +65,33 @@ class AccountContext:
     @property
     def user_id(self) -> str | None:
         return self.account.get("user_id")
+
+
+def _google_attendee(guest: EventAttendeeInput) -> Dict[str, Any]:
+    attendee: Dict[str, Any] = {"email": guest.email}
+    if guest.display_name:
+        attendee["displayName"] = guest.display_name
+    return attendee
+
+
+def _merge_attendees(
+    current: List[Dict[str, Any]],
+    add: List[EventAttendeeInput],
+    remove: List[EventAttendeeInput],
+) -> List[Dict[str, Any]]:
+    """The event's guest list with `remove` taken off and `add` invited.
+
+    Guests already on the event keep their entries as Google returned them (response
+    status, organizer flags); new guests are appended.
+    """
+    removed = {guest.email for guest in remove}
+    merged = [a for a in current if isinstance(a, dict) and (a.get("email") or "").lower() not in removed]
+    present = {(a.get("email") or "").lower() for a in merged}
+    for guest in add:
+        if guest.email not in present and guest.email not in removed:
+            merged.append(_google_attendee(guest))
+            present.add(guest.email)
+    return merged
 
 
 class CalendarService:
@@ -217,6 +245,7 @@ class CalendarService:
         end: EventTime,
         description: str | None = None,
         location: str | None = None,
+        attendees: List[EventAttendeeInput] | None = None,
         timezone_name: str = "UTC",
     ) -> Dict[str, Any]:
         """Create a new event in Google Calendar.
@@ -229,6 +258,7 @@ class CalendarService:
             end: End time (TimedEventTime or AllDayEventTime)
             description: Optional description
             location: Optional location
+            attendees: Optional guests to invite (Google emails them an invite)
             timezone_name: Timezone name (only used for timed events, defaults to UTC)
         """
         contexts, calendars_by_id = await self._prepare_context(user_id)
@@ -288,12 +318,17 @@ class CalendarService:
             event_data["description"] = description
         if location:
             event_data["location"] = location
+        if attendees:
+            event_data["attendees"] = [_google_attendee(guest) for guest in attendees]
+        # Guests get an email invite from Google
+        send_updates = "all" if attendees else None
 
         # Create the event via provider
         try:
             created_event = await event_context.provider.create_event(
                 calendar_id=calendar_id,
                 event_data=event_data,
+                send_updates=send_updates,
             )
         except GoogleCalendarAPIError as exc:
             if exc.status_code == 401:
@@ -301,6 +336,7 @@ class CalendarService:
                 created_event = await event_context.provider.create_event(
                     calendar_id=calendar_id,
                     event_data=event_data,
+                    send_updates=send_updates,
                 )
             elif exc.status_code == 403:
                 # Preserve 403 errors so they can be handled properly in the endpoint
@@ -345,6 +381,8 @@ class CalendarService:
         end: EventTime | None = None,
         description: str | None = None,
         location: str | None = None,
+        add_attendees: List[EventAttendeeInput] | None = None,
+        remove_attendees: List[EventAttendeeInput] | None = None,
         timezone_name: str = "UTC",
     ) -> Dict[str, Any]:
         """Update an existing event in Google Calendar.
@@ -358,6 +396,8 @@ class CalendarService:
             end: Optional new end time (TimedEventTime or AllDayEventTime)
             description: Optional new description
             location: Optional new location
+            add_attendees: Optional guests to invite (Google emails them an invite)
+            remove_attendees: Optional guests to take off the event (Google emails them a notice)
             timezone_name: Timezone name (only used for timed events, defaults to UTC)
         """
         contexts, calendars_by_id = await self._prepare_context(user_id)
@@ -527,8 +567,22 @@ class CalendarService:
         elif current_event.get("location"):
             event_data["location"] = current_event["location"]
 
+        # Guests: only touched when some are added or removed (the patch leaves them as they are)
+        current_attendees = [a for a in current_event.get("attendees") or [] if isinstance(a, dict)]
+        attendees = current_attendees
+        if add_attendees or remove_attendees:
+            attendees = _merge_attendees(current_attendees, add_attendees or [], remove_attendees or [])
+            if attendees != current_attendees:
+                event_data["attendees"] = attendees
+
         if not event_data:
             raise GoogleCalendarUserError("No fields provided to update.")
+
+        # Email guests when the guest list or the time changes (added guests get an invite,
+        # removed ones a notice); renames and notes stay quiet
+        has_guests = any(not a.get("self") for a in attendees) or len(attendees) < len(current_attendees)
+        guests_or_time_changed = "attendees" in event_data or start is not None or end is not None
+        send_updates = "all" if has_guests and guests_or_time_changed else None
 
         # Update the event via provider
         try:
@@ -536,6 +590,7 @@ class CalendarService:
                 calendar_id=calendar_id,
                 event_id=event_id,
                 event_data=event_data,
+                send_updates=send_updates,
             )
         except GoogleCalendarAPIError as exc:
             if exc.status_code == 401:
@@ -544,6 +599,7 @@ class CalendarService:
                     calendar_id=calendar_id,
                     event_id=event_id,
                     event_data=event_data,
+                    send_updates=send_updates,
                 )
             elif exc.status_code == 403:
                 # Preserve 403 errors so they can be handled properly in the endpoint

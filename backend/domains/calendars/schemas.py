@@ -271,6 +271,20 @@ class ScheduleResponse(BaseModel):
     events: List[CalendarEvent]
 
 
+class EventAttendeeInput(BaseModel):
+    """A guest to invite to (or take off) an event."""
+    email: str = Field(..., min_length=3)
+    display_name: Optional[str] = None
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        email = value.strip().lower()
+        if "@" not in email:
+            raise ValueError("Not an email address")
+        return email
+
+
 class CreateEventRequest(BaseModel):
     summary: str = Field(..., min_length=1)
     start: EventTime
@@ -278,6 +292,7 @@ class CreateEventRequest(BaseModel):
     calendar_id: str = Field(..., min_length=1)
     description: Optional[str] = None
     location: Optional[str] = None
+    attendees: List[EventAttendeeInput] = Field(default_factory=list)
     
     @model_validator(mode='after')
     def validate_event_times(self):
@@ -298,6 +313,8 @@ class UpdateEventRequest(BaseModel):
     calendar_id: str = Field(..., min_length=1)
     description: Optional[str] = None
     location: Optional[str] = None
+    add_attendees: List[EventAttendeeInput] = Field(default_factory=list)
+    remove_attendees: List[EventAttendeeInput] = Field(default_factory=list)
     
     @model_validator(mode='after')
     def validate_event_times(self):

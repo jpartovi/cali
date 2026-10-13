@@ -400,6 +400,7 @@ async def create_event(
             end=payload.end,
             description=payload.description,
             location=payload.location,
+            attendees=payload.attendees,
             timezone_name=user_timezone,
         )
         return CreateEventResponse(event=CalendarEvent(**result))
@@ -511,6 +512,8 @@ async def update_event(
             end=payload.end,
             description=payload.description,
             location=payload.location,
+            add_attendees=payload.add_attendees,
+            remove_attendees=payload.remove_attendees,
             timezone_name=user_timezone,
         )
         return UpdateEventResponse(event=CalendarEvent(**result))

@@ -41,8 +41,9 @@ class CalendarProvider(ABC):
         self,
         calendar_id: str,
         event_data: Dict[str, Any],
+        send_updates: str | None = None,
     ) -> Dict[str, Any]:
-        """Create a new event in a calendar."""
+        """Create a new event in a calendar (send_updates: Google's sendUpdates, e.g. "all" to email guests)."""
         ...
 
     @abstractmethod
@@ -51,8 +52,9 @@ class CalendarProvider(ABC):
         calendar_id: str,
         event_id: str,
         event_data: Dict[str, Any],
+        send_updates: str | None = None,
     ) -> Dict[str, Any]:
-        """Update an existing event in a calendar."""
+        """Change the given fields of an existing event, leaving the rest as they are."""
         ...
 
     @abstractmethod

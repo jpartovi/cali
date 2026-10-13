@@ -543,21 +543,23 @@ class GoogleCalendarProvider(CalendarProvider):
         self,
         calendar_id: str,
         event_data: Dict[str, Any],
+        send_updates: str | None = None,
     ) -> Dict[str, Any]:
         """Create a new event in a calendar."""
         wrapper = self._get_wrapper()
-        return await wrapper.create_event(calendar_id=calendar_id, event_data=event_data)
+        return await wrapper.create_event(calendar_id=calendar_id, event_data=event_data, send_updates=send_updates)
 
     async def update_event(
         self,
         calendar_id: str,
         event_id: str,
         event_data: Dict[str, Any],
+        send_updates: str | None = None,
     ) -> Dict[str, Any]:
-        """Update an existing event in a calendar."""
+        """Change the given fields of an existing event, leaving the rest as they are."""
         wrapper = self._get_wrapper()
         return await wrapper.update_event(
-            calendar_id=calendar_id, event_id=event_id, event_data=event_data
+            calendar_id=calendar_id, event_id=event_id, event_data=event_data, send_updates=send_updates
         )
 
     async def delete_event(
@@ -721,10 +723,14 @@ class GoogleCalendarWrapper:
         *,
         calendar_id: str,
         event_data: Dict[str, Any],
+        send_updates: str | None = None,
     ) -> Dict[str, Any]:
         """Create a new event in a calendar."""
         service = self._get_service()
-        request = service.events().insert(calendarId=calendar_id, body=event_data)
+        params: Dict[str, Any] = {"calendarId": calendar_id, "body": event_data}
+        if send_updates:
+            params["sendUpdates"] = send_updates
+        request = service.events().insert(**params)
         return await self._execute_request(request)
 
     async def update_event(
@@ -733,12 +739,18 @@ class GoogleCalendarWrapper:
         calendar_id: str,
         event_id: str,
         event_data: Dict[str, Any],
+        send_updates: str | None = None,
     ) -> Dict[str, Any]:
-        """Update an existing event in a calendar."""
+        """Change the given fields of an existing event.
+
+        A patch, not a full update: a full update replaces the whole event, so anything left
+        out of event_data (guests, Meet link, reminders, recurrence) would be wiped.
+        """
         service = self._get_service()
-        request = service.events().update(
-            calendarId=calendar_id, eventId=event_id, body=event_data
-        )
+        params: Dict[str, Any] = {"calendarId": calendar_id, "eventId": event_id, "body": event_data}
+        if send_updates:
+            params["sendUpdates"] = send_updates
+        request = service.events().patch(**params)
         return await self._execute_request(request)
 
     async def delete_event(

@@ -421,6 +421,7 @@ struct CreateEventRequest: Encodable {
     let calendarId: String
     let description: String?
     let location: String?
+    var attendees: [EventAttendeeMetadata] = []
 
     enum CodingKeys: String, CodingKey {
         case summary
@@ -429,6 +430,7 @@ struct CreateEventRequest: Encodable {
         case calendarId = "calendar_id"
         case description
         case location
+        case attendees
     }
     
     func encode(to encoder: Encoder) throws {
@@ -446,6 +448,9 @@ struct CreateEventRequest: Encodable {
         if let location = location {
             try container.encode(location, forKey: .location)
         }
+        if !attendees.isEmpty {
+            try container.encode(attendees, forKey: .attendees)
+        }
     }
 }
 
@@ -460,6 +465,8 @@ struct UpdateEventRequest: Encodable {
     let calendarId: String
     let description: String?
     let location: String?
+    var addAttendees: [EventAttendeeMetadata] = []
+    var removeAttendees: [EventAttendeeMetadata] = []
 
     enum CodingKeys: String, CodingKey {
         case summary
@@ -468,6 +475,8 @@ struct UpdateEventRequest: Encodable {
         case calendarId = "calendar_id"
         case description
         case location
+        case addAttendees = "add_attendees"
+        case removeAttendees = "remove_attendees"
     }
     
     func encode(to encoder: Encoder) throws {
@@ -490,6 +499,12 @@ struct UpdateEventRequest: Encodable {
         }
         if let location = location {
             try container.encode(location, forKey: .location)
+        }
+        if !addAttendees.isEmpty {
+            try container.encode(addAttendees, forKey: .addAttendees)
+        }
+        if !removeAttendees.isEmpty {
+            try container.encode(removeAttendees, forKey: .removeAttendees)
         }
     }
 }

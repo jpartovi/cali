@@ -1147,7 +1147,11 @@ final class AgentViewModel: ObservableObject {
             description: metadata.description ?? originalEvent.description,
             start: updatedStart,
             end: updatedEnd,
-            attendees: originalEvent.attendees, // Preserve attendees
+            attendees: Self.previewAttendees(
+                current: originalEvent.attendees,
+                adding: metadata.add_attendees,
+                removing: metadata.remove_attendees
+            ),
             createdBy: originalEvent.createdBy, // Preserve createdBy
             calendarId: calendarID,
             calendarColor: calendarColor ?? originalEvent.calendarColor, // Use looked-up color or fall back to original
@@ -1299,7 +1303,7 @@ final class AgentViewModel: ObservableObject {
             description: metadata.description,
             start: startEventDateTime,
             end: endEventDateTime,
-            attendees: [],
+            attendees: Self.previewAttendees(current: [], adding: metadata.attendees, removing: nil),
             createdBy: nil,
             calendarId: metadata.calendar_id,
             calendarColor: calendarColor,
@@ -1370,6 +1374,22 @@ final class AgentViewModel: ObservableObject {
     }
 
     // MARK: - Event Confirmation
+    /// Guests the preview event shows: the event's current guests with the agent's changes applied.
+    private static func previewAttendees(
+        current: [CalendarEvent.Attendee],
+        adding: [EventAttendeeMetadata]?,
+        removing: [EventAttendeeMetadata]?
+    ) -> [CalendarEvent.Attendee] {
+        let removed = Set((removing ?? []).map { $0.email.lowercased() })
+        var attendees = current.filter { !removed.contains(($0.email ?? "").lowercased()) }
+        var present = Set(attendees.compactMap { $0.email?.lowercased() })
+        for guest in adding ?? [] where !present.contains(guest.email.lowercased()) {
+            attendees.append(CalendarEvent.Attendee(email: guest.email, displayName: guest.display_name, responseStatus: "needsAction"))
+            present.insert(guest.email.lowercased())
+        }
+        return attendees
+    }
+
     func confirmPendingAction(accessToken: String?) async {
         guard let action = agentAction else {
             return
@@ -1434,7 +1454,8 @@ final class AgentViewModel: ObservableObject {
                         end: BackendEventTime(timed: endDateTime, timeZone: timezone),
                         calendarId: metadata.calendar_id,
                         description: metadata.description,
-                        location: metadata.location
+                        location: metadata.location,
+                        attendees: metadata.attendees ?? []
                     )
                 case (.allDay(let startDateString), .allDay(let endDateString)):
                     // All-day event
@@ -1444,7 +1465,8 @@ final class AgentViewModel: ObservableObject {
                         end: BackendEventTime(allDay: endDateString),
                         calendarId: metadata.calendar_id,
                         description: metadata.description,
-                        location: metadata.location
+                        location: metadata.location,
+                        attendees: metadata.attendees ?? []
                     )
                 default:
                     throw NSError(domain: "AgentViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Start and end must both be timed or both be all-day events"])
@@ -1574,7 +1596,9 @@ final class AgentViewModel: ObservableObject {
                     end: endBackendTime,
                     calendarId: calendarID,
                     description: metadata.description,
-                    location: metadata.location
+                    location: metadata.location,
+                    addAttendees: metadata.add_attendees ?? [],
+                    removeAttendees: metadata.remove_attendees ?? []
                 )
 
                 // Call calendar service to apply the update
