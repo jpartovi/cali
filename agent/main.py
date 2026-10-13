@@ -38,6 +38,8 @@ if not openai_api_key:
 
 llm = ChatOpenAI(
     model="gpt-6-luna",  # GPT-6 models reject `temperature`
+    # Cache only where we mark it: after the static system prompt (see agent_node)
+    prompt_cache_options={"mode": "explicit"},
     model_kwargs={"tool_choice": "required"},  # Force tool usage at model level
 )
 
@@ -319,8 +321,14 @@ def _build_examples_section() -> str:
 def _build_system_prompt(
     current_time: str,
     user_timezone: str
-) -> str:
-    """Assemble complete system prompt from all sections"""
+) -> tuple[str, str]:
+    """Assemble the system prompt as (static instructions, per-request time context).
+
+    They are sent as two separate system messages. On current OpenAI models the prompt
+    cache is only checked at message boundaries, so a single message that ends with the
+    current time is never reused across requests; splitting it puts a boundary right
+    after the ~6k tokens that never change.
+    """
     # Parse ISO string to datetime object
     try:
         current_datetime = datetime.fromisoformat(current_time)
@@ -338,10 +346,10 @@ def _build_system_prompt(
         # This should not happen in normal operation, but provides a fallback
         raise ValueError(f"Invalid current_time format: {current_time}") from e
     
-    sections = [
+    # Everything that never changes goes in the first message so it can be cached
+    static_sections = [
         _build_agent_identity_section(),
         _build_architecture_section(),
-        _build_time_date_handling_section(current_datetime, user_timezone),
         _build_tool_reference_section(),  # Includes calendar selection rules for write operations
         _build_query_patterns_section(),  # Includes calendar selection in CREATE/UPDATE/DELETE patterns
         _build_tool_result_processing_section(),
@@ -349,7 +357,9 @@ def _build_system_prompt(
         _build_examples_section(),
     ]
     
-    return "\n\n".join(filter(None, sections))  # Filter out empty sections
+    static_prompt = "\n\n".join(filter(None, static_sections))  # Filter out empty sections
+    time_prompt = _build_time_date_handling_section(current_datetime, user_timezone)
+    return static_prompt, time_prompt
 
 
 # ============================================================================
@@ -420,17 +430,24 @@ def agent_node(state: State) -> Dict[str, Any]:
         raise ValueError("current_day_of_week is required in state but was not provided")
     
     # Build system prompt from organized sections
-    system_instruction = SystemMessage(content=_build_system_prompt(
-        current_time, user_timezone
-    ))
+    static_prompt, time_prompt = _build_system_prompt(current_time, user_timezone)
+    system_messages = [
+        # Breakpoint after the static block so every request reuses it from the cache
+        SystemMessage(content=[{
+            "type": "text",
+            "text": static_prompt,
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        }]),
+        SystemMessage(content=time_prompt),
+    ]
     
     # Initialize messages if empty
     if not messages:
-        messages = [system_instruction, HumanMessage(content=query)]
+        messages = system_messages + [HumanMessage(content=query)]
     else:
-        # Ensure system message is first if messages already exist
+        # Ensure system messages come first if messages already exist
         if not any(isinstance(msg, SystemMessage) for msg in messages):
-            messages = [system_instruction] + messages
+            messages = system_messages + messages
     
     try:
         # Invoke LLM with tools (tool_choice="required" set at model level)
