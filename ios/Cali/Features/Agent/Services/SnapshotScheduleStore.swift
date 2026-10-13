@@ -20,6 +20,7 @@ final class SnapshotScheduleStore {
     private var realtimeSubscriptions = Set<RealtimeSubscription>()
     private var isStarted = false
     private var startTask: Task<Void, Error>?
+    private var realtimeTask: Task<Void, Never>?
 
     init(client: SupabaseClient? = nil) {
         self.client = client ?? AuthTokenProvider.shared.client
@@ -32,18 +33,38 @@ final class SnapshotScheduleStore {
         }
         let task = Task { @MainActor in
             try await self.refresh()
-            if !self.isStarted {
-                try await self.subscribe()
-                self.isStarted = true
-            }
+            self.connectRealtimeInBackground()
         }
         startTask = task
         do {
             try await task.value
         } catch {
             startTask = nil
-            isStarted = false
             throw error
+        }
+    }
+
+    /// Realtime keeps the schedule live, but joining a channel can stall for a long time
+    /// (e.g. during a Supabase Realtime incident), so loading never waits on it: the schedule
+    /// comes from `refresh()`, and Realtime connects here in the background, retrying with
+    /// backoff. Once connected it refreshes again to pick up anything that changed meanwhile.
+    private func connectRealtimeInBackground() {
+        guard realtimeTask == nil, !isStarted else { return }
+        realtimeTask = Task { @MainActor [weak self] in
+            var delaySeconds: UInt64 = 2
+            while !Task.isCancelled {
+                guard let self, !self.isStarted else { break }
+                do {
+                    try await self.subscribe()
+                    self.isStarted = true
+                    try? await self.refresh()
+                } catch {
+                    snapshotLogger.error("Realtime subscribe failed, retrying in \(delaySeconds)s: \(String(describing: error), privacy: .public)")
+                    try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+                    delaySeconds = min(delaySeconds * 2, 60)
+                }
+            }
+            self?.realtimeTask = nil
         }
     }
 
@@ -71,6 +92,8 @@ final class SnapshotScheduleStore {
     }
 
     func stop() async {
+        realtimeTask?.cancel()
+        realtimeTask = nil
         isStarted = false
         startTask = nil
         realtimeSubscriptions.removeAll()
@@ -105,7 +128,13 @@ final class SnapshotScheduleStore {
         // supabase-swift appends postgres filters on a later MainActor turn.
         await Task { @MainActor in }.value
 
-        try await channel.subscribeWithError()
+        do {
+            try await channel.subscribeWithError()
+        } catch {
+            // Drop the half-joined channel so the next attempt starts clean
+            await client.removeChannel(channel)
+            throw error
+        }
         snapshotLogger.info("Subscribed to calendar snapshots for \(userId, privacy: .public)")
         self.channel = channel
     }
