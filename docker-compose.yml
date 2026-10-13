@@ -17,6 +17,7 @@ services:
       PORT: "8000"
       BACKEND_URL: http://localhost:8000
       LANGGRAPH_AGENT_URL: http://host.docker.internal:2024
+      TIMING_LOG_PATH: /tmp/backend_timing.log # read with: docker compose exec backend cat /tmp/backend_timing.log
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

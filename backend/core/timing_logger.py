@@ -4,6 +4,7 @@ Writes timing information to a file instead of console.
 Only logs when ENABLE_TIMING_LOGGER is set to True in config.
 """
 
+import os
 import time
 import logging
 from pathlib import Path
@@ -15,8 +16,11 @@ from functools import lru_cache
 # Thread-safe file writing
 _lock = threading.Lock()
 
-# Log file path - in project root
-_log_file_path = Path(__file__).parent.parent.parent / "backend_timing.log"
+# Log file path - project root by default; TIMING_LOG_PATH overrides it (e.g. /tmp in Docker,
+# where the app user cannot write to the filesystem root)
+_log_file_path = Path(
+    os.getenv("TIMING_LOG_PATH") or Path(__file__).parent.parent.parent / "backend_timing.log"
+)
 
 
 @lru_cache(maxsize=1)
@@ -42,9 +46,13 @@ class TimingLogger:
         if not _is_enabled():
             return
         with _lock:
-            if not self.log_file.exists():
-                with open(self.log_file, "w") as f:
-                    f.write(f"=== Backend Timing Log - Started {datetime.now().isoformat()} ===\n\n")
+            try:
+                if not self.log_file.exists():
+                    with open(self.log_file, "w") as f:
+                        f.write(f"=== Backend Timing Log - Started {datetime.now().isoformat()} ===\n\n")
+            except OSError as e:
+                # Never take the server down over a debug log
+                logging.getLogger(__name__).error(f"Cannot create timing log {self.log_file}: {e}")
     
     def log(self, step: str, duration: Optional[float] = None, details: Optional[str] = None):
         """
