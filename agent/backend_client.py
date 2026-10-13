@@ -231,6 +231,26 @@ class BackendClient(CalendarClient):
             logger.error(f"Failed to search events: {str(e)}", exc_info=True)
             raise ValueError(f"Failed to search events: {str(e)}") from e
     
+
+    async def find_event(
+        self,
+        description: str,
+        start_time: str,
+        end_time: str,
+        auth: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Ask the backend (TypeSafe Jev) which event in the window the description means."""
+        return await self._make_request(
+            method="POST",
+            path="/api/v1/agent/calendars/find",
+            auth=auth,
+            json_data={
+                "description": description,
+                "start_time": start_time,
+                "end_time": end_time,
+            },
+        )
+
     async def read_event(
         self,
         event_id: str,

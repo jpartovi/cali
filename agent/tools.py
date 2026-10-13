@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 from langchain_core.tools import tool
@@ -518,9 +519,46 @@ def do_nothing(reason: str) -> Dict[str, Any]:
     )
     return response.model_dump()
 
+@tool
+def find_event(description: str, start_time: str, end_time: str) -> Dict[str, Any]:
+    """
+    Find the single event the user is referring to within a time window.
+    
+    Looks at every event in the window and picks the one the description means
+    (it understands meaning, so it doesn't need the event's exact title words).
+    
+    Args:
+        description: The user's own words for the event, including any people, place
+                     or time hints (e.g. "my frisbee game", "dinner with sam on friday").
+                     Don't shorten it to keywords.
+        start_time: Timezone-aware ISO datetime with offset bounding the search start
+        end_time: Timezone-aware ISO datetime with offset bounding the search end
+    
+    Returns:
+        Dict with "status":
+        - "match": "event" holds the event (use its id and calendar_id directly)
+        - "ambiguous": "candidates" lists the likely events with their probability
+        - "none": no event in the window fits the description
+        - "too_many": the window holds too many events; call again with a narrower window
+        - "error": the finder is unavailable; fall back to search_events
+    """
+    try:
+        auth = get_auth_context()
+        client = get_calendar_client()
+        return _run_async(client.find_event(description, start_time, end_time, auth=auth))
+    except Exception as e:
+        logger.error(f"Error in find_event: {str(e)}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
 
 # Lists of tools for easy access
+# AGENT_FIND_EVENT=jev offers find_event (TypeSafe Jev picks the event) next to search_events
+FIND_EVENT_ENABLED = os.getenv("AGENT_FIND_EVENT", "").strip().lower() == "jev"
+
 INTERNAL_TOOLS = [read_schedule, search_events, read_event, list_calendars]
+if FIND_EVENT_ENABLED:
+    INTERNAL_TOOLS.append(find_event)
 EXTERNAL_TOOLS = [
     show_schedule,
     show_event,

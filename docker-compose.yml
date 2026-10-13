@@ -18,6 +18,10 @@ services:
       BACKEND_URL: http://localhost:8000
       LANGGRAPH_AGENT_URL: http://host.docker.internal:2024
       TIMING_LOG_PATH: /tmp/backend_timing.log # read with: docker compose exec backend cat /tmp/backend_timing.log
+      # Stage 1 Jev pre-pass; turn on with: AGENT_REQUEST_CLASSIFIER=true docker compose up -d backend
+      AGENT_REQUEST_CLASSIFIER: ${AGENT_REQUEST_CLASSIFIER:-false}
+      # Stage 2 Jev pre-pass (needs the classifier): AGENT_PREPASS_EVENT=true
+      AGENT_PREPASS_EVENT: ${AGENT_PREPASS_EVENT:-false}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

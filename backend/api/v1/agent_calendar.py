@@ -322,6 +322,71 @@ async def search_events(
         ) from e
 
 
+@router.post("/find")
+async def find_event(
+    payload: Dict[str, Any],
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Find the one event a request refers to, using TypeSafe Jev.
+
+    Expects JSON body with:
+    - description: what the user said about the event (e.g. "my frisbee game")
+    - start_time / end_time: ISO datetimes bounding where to look
+
+    Returns status "match" (with event), "ambiguous" (with candidates and
+    probabilities), "none", or "too_many" (range holds more events than Jev can
+    choose between; narrow it).
+    """
+    from services.event_finder import EventFinderNotConfigured, find_event_for_user
+    from typesafe_sdk import TypeSafeError
+
+    try:
+        description = (payload.get("description") or "").strip()
+        start_time_str = payload.get("start_time")
+        end_time_str = payload.get("end_time")
+        if not description:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="description is required")
+        if not start_time_str or not end_time_str:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_time and end_time are required")
+
+        user_timezone = get_user_timezone(current_user.id)
+        tz = ZoneInfo(user_timezone)
+        start_time = _parse_datetime_or_date(start_time_str)
+        end_time = _parse_datetime_or_date(end_time_str)
+        # Whole days in the user's timezone, matching the schedule endpoint
+        start_date = (start_time.astimezone(tz) if start_time.tzinfo else start_time).date()
+        end_date = (end_time.astimezone(tz) if end_time.tzinfo else end_time).date()
+
+        result = await find_event_for_user(
+            user_id=current_user.id,
+            description=description,
+            start_date=start_date,
+            end_date=end_date,
+            timezone_name=user_timezone,
+        )
+        if result.get("event"):
+            result["event"] = _localize_event(result["event"], tz)
+        result["candidates"] = [_localize_event(c, tz) for c in result.get("candidates", [])]
+        return result
+    except HTTPException:
+        raise
+    except EventFinderNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Event finder is not configured") from e
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid datetime format: {str(e)}") from e
+    except GoogleCalendarAuthError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
+    except TypeSafeError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Event finder is unavailable. Please try again.") from e
+    except Exception as e:
+        logger.exception(f"Unexpected error finding event user_id={current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while finding the event. Please try again.",
+        ) from e
+
+
 @router.get("/{calendar_id}/events/{event_id}")
 async def get_event(
     calendar_id: str,

@@ -55,6 +55,23 @@ class CalendarClient(ABC):
         pass
 
     @abstractmethod
+    async def find_event(
+        self,
+        description: str,
+        start_time: str,
+        end_time: str,
+        auth: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Pick the single event a description refers to within a time window.
+        
+        Returns:
+            Dict with status ("match" | "ambiguous" | "none" | "too_many"),
+            event (when matched) and candidates with probabilities (when ambiguous)
+        """
+        pass
+
+    @abstractmethod
     async def read_event(
         self,
         event_id: str,

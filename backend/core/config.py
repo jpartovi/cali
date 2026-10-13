@@ -62,6 +62,15 @@ class Settings(BaseSettings):
     # Deepgram transcription configuration
     deepgram_api_key: str | None = None
 
+    # TypeSafe Jev (classifies agent requests; picks the event a request means in /agent/calendars/find)
+    typesafe_api_key: str | None = None
+    typesafe_model: str = "jev-latest"
+    # Stage 1 pre-pass: classify each agent request with Jev so the agent gets a kind-specific prompt
+    agent_request_classifier: bool = False
+    # Stage 2 pre-pass: for find/delete/update requests, have Jev pick the likely event up front
+    # (needs agent_request_classifier, since it only runs for those kinds)
+    agent_prepass_event: bool = False
+
     # Performance debugging
     enable_timing_logger: bool = False  # Enable detailed timing logs (default: off for production)
 

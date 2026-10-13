@@ -75,6 +75,23 @@ class MockClient(CalendarClient):
             for event in events
         ]
 
+
+    async def find_event(
+        self,
+        description: str,
+        start_time: str,
+        end_time: str,
+        auth: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Mock: treat the description as keywords and match only a single hit."""
+        events = await self.search_events(description, start_time, end_time, auth=auth)
+        if len(events) == 1:
+            return {"status": "match", "event": {**events[0], "probability": 1.0}, "candidates": []}
+        if events:
+            share = round(1 / len(events), 3)
+            return {"status": "ambiguous", "event": None, "candidates": [{**e, "probability": share} for e in events[:3]]}
+        return {"status": "none", "event": None, "candidates": []}
+
     async def read_event(
         self,
         event_id: str,

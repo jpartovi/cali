@@ -1,8 +1,10 @@
 """Agent endpoint for invoking the LangGraph calendar agent."""
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
+from typing import Optional
 from zoneinfo import ZoneInfo
 from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, Body
@@ -33,6 +35,126 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 
 # Initialize transcription service
 transcription_service = TranscriptionService()
+
+
+# The pre-pass must never hold up a request for long; past this, the agent runs without a kind
+REQUEST_CLASSIFIER_TIMEOUT_SECONDS = 2.0
+
+
+async def _classify_request_kind(query_text: str) -> Optional[str]:
+    """Stage 1 pre-pass: the request kind when Jev is sure of it, else None (agent uses its full prompt)."""
+    if not get_settings().agent_request_classifier:
+        return None
+    from services.request_classifier import classify_request
+
+    start = time.time()
+    try:
+        result = await asyncio.wait_for(classify_request(query_text), timeout=REQUEST_CLASSIFIER_TIMEOUT_SECONDS)
+    except Exception as e:
+        logger.warning(f"Request classification skipped: {type(e).__name__}: {e}")
+        log_step("backend.api.action.classify", time.time() - start, details=f"skipped={type(e).__name__}")
+        return None
+    kind = result["kind"] if result["sure"] and result["kind"] != "other" else None
+    log_step(
+        "backend.api.action.classify",
+        time.time() - start,
+        details=f"kind={result['kind']} p={result['probability']} used={kind is not None} jev_ms={result['jev_ms']}",
+    )
+    logger.info(
+        f"Request kind: {result['kind']} p={result['probability']} used={kind is not None} "
+        f"seconds={time.time() - start:.2f} jev_ms={result['jev_ms']} probabilities={result['probabilities']}"
+    )
+    return kind
+
+
+# Stage 2: only these kinds act on an existing event, so only they look one up
+EVENT_KINDS = ("find_event", "update_event", "delete_event")
+# Default window when the request names no time ("cancel my haircut")
+PREPASS_EVENT_DAYS_BACK = 1
+PREPASS_EVENT_DAYS_AHEAD = 30
+# Searched first from calendar_event_snapshots (the calendar listener's horizon); Google only on a miss
+PREPASS_SNAPSHOT_DAYS_AHEAD = 13
+PREPASS_EVENT_TIMEOUT_SECONDS = 4.0
+
+
+async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optional[str], user_timezone: str) -> Optional[dict]:
+    """Stage 2 pre-pass: Jev's likely events for find/update/delete requests, else None."""
+    if request_kind not in EVENT_KINDS or not get_settings().agent_prepass_event:
+        return None
+    from datetime import timedelta
+    from services.event_finder import find_event_for_user, snapshot_events_for_user
+
+    today = datetime.now(ZoneInfo(user_timezone)).date()
+    start_date = today - timedelta(days=PREPASS_EVENT_DAYS_BACK)
+    end_date = today + timedelta(days=PREPASS_EVENT_DAYS_AHEAD)
+    snapshot_end = today + timedelta(days=PREPASS_SNAPSHOT_DAYS_AHEAD)
+    start = time.time()
+    source = "snapshots"
+
+    async def lookup() -> dict:
+        nonlocal source, end_date
+        # 1) The listener's copy of the next two weeks: a database read, no Google calls
+        events = await asyncio.to_thread(snapshot_events_for_user, user_id, start_date, snapshot_end, user_timezone)
+        if events:
+            found = await find_event_for_user(
+                user_id=user_id, description=query_text, start_date=start_date,
+                end_date=snapshot_end, timezone_name=user_timezone, events=events,
+            )
+            if found["status"] in ("match", "ambiguous"):
+                end_date = snapshot_end
+                return found
+        # 2) Nothing there: search the full window from Google
+        source = "google"
+        return await find_event_for_user(
+            user_id=user_id, description=query_text, start_date=start_date,
+            end_date=end_date, timezone_name=user_timezone,
+        )
+
+    try:
+        result = await asyncio.wait_for(lookup(), timeout=PREPASS_EVENT_TIMEOUT_SECONDS)
+    except Exception as e:
+        logger.warning(f"Pre-pass event lookup skipped: {type(e).__name__}: {e}")
+        log_step("backend.api.action.prepass_event", time.time() - start, details=f"skipped={type(e).__name__}")
+        return None
+    log_step(
+        "backend.api.action.prepass_event",
+        time.time() - start,
+        details=f"status={result['status']} source={source} events={result['event_count']} jev_ms={result['jev_ms']}",
+    )
+    if result["status"] == "too_many":
+        return None  # Nothing useful to show; the agent searches on its own
+    top = result.get("top") or []
+    logger.info(
+        f"Pre-pass event: status={result['status']} source={source} events={result['event_count']} "
+        f"seconds={time.time() - start:.2f} top={[(e.get('summary'), e.get('probability')) for e in top]}"
+    )
+    return {
+        "status": result["status"],
+        "searched_from": start_date.isoformat(),
+        "searched_to": end_date.isoformat(),
+        "event_count": result["event_count"],
+        "top": top,
+    }
+
+
+def _writable_calendars(user_id: str) -> list:
+    """Calendars the user can write to, in the agent's list_calendars format.
+
+    Same source and filter as GET /agent/calendars. Sent with the request so the
+    agent's write validation doesn't have to call back to the backend for it.
+    """
+    from domains.calendars.repository import CalendarRepository
+
+    return [
+        {
+            "id": cal.get("google_calendar_id"),
+            "name": cal.get("name"),
+            "access_role": cal.get("access_role"),
+            "is_primary": cal.get("is_primary", False),
+        }
+        for cal in CalendarRepository().get_calendars(user_id)
+        if cal.get("access_role") in {"writer", "owner"}
+    ]
 
 
 class AgentActionRequest(BaseModel):
@@ -180,9 +302,20 @@ async def agent_action(
         current_time_str = current_user_time.isoformat()
         current_day_of_week = current_user_time.strftime("%A")  # Full day name
 
+        # The calendar list (a database read) runs while Jev classifies the request
+        calendars_task = asyncio.create_task(asyncio.to_thread(_writable_calendars, current_user.id))
+        request_kind = await _classify_request_kind(query_text)
+        prepass_event = await _find_prepass_event(current_user.id, query_text, request_kind, user_timezone)
+        try:
+            auth["writable_calendars"] = await calendars_task
+        except Exception as e:
+            logger.warning(f"Writable calendar lookup failed; the agent will look them up itself: {e}")
+
         input_state = {
             "query": query_text,
             "auth": auth,
+            "request_kind": request_kind,
+            "prepass_event": prepass_event,
             "success": False,
             "type": None,
             "metadata": {},

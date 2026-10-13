@@ -46,6 +46,16 @@ def _run_async_in_thread(coro):
 Validator = Callable[[Dict[str, Any], Dict[str, Any]], Optional[str]]
 
 
+def _writable_calendars(auth: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Writable calendars sent with the request by the backend, or fetched if it didn't send them."""
+    calendars = auth.get("writable_calendars") if auth else None
+    if calendars is not None:
+        return calendars
+    client = create_calendar_client()
+    # Use _run_async since list_calendars is async
+    return _run_async(client.list_calendars(auth=auth))
+
+
 def check_calendar_write_permission(calendar_id: str, auth: Dict[str, Any]) -> bool:
     """
     Check if user has write access to a calendar.
@@ -58,10 +68,8 @@ def check_calendar_write_permission(calendar_id: str, auth: Dict[str, Any]) -> b
         True if user has "writer" or "owner" role, False otherwise
     """
     try:
-        client = create_calendar_client()
-        # Get all calendars (which are already filtered to writable ones by the API)
-        # Use _run_async since list_calendars is async
-        calendars = _run_async(client.list_calendars(auth=auth))
+        # Already filtered to writable calendars (by the backend or the API)
+        calendars = _writable_calendars(auth)
         
         # Find the calendar by ID
         for calendar in calendars:
@@ -107,9 +115,7 @@ def validate_write_permissions(result: Dict[str, Any], auth: Dict[str, Any]) -> 
         # Try to get calendar name for better error message
         calendar_name = "unknown calendar"
         try:
-            client = create_calendar_client()
-            calendars = _run_async(client.list_calendars(auth=auth))
-            for calendar in calendars:
+            for calendar in _writable_calendars(auth):
                 if calendar.get("id") == calendar_id:
                     calendar_name = calendar.get("name") or calendar_id
                     break

@@ -19,7 +19,7 @@ from typing import Literal, Any, List, Dict, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage, SystemMessage
 
-from agent.tools import ALL_TOOLS, INTERNAL_TOOLS, EXTERNAL_TOOLS, set_auth_context
+from agent.tools import ALL_TOOLS, INTERNAL_TOOLS, EXTERNAL_TOOLS, FIND_EVENT_ENABLED, set_auth_context
 from agent.schemas.agent_response import ErrorResponse
 from agent.validation import validate_request
 from agent.timing_logger import log_step, log_start
@@ -38,6 +38,8 @@ if not openai_api_key:
 
 llm = ChatOpenAI(
     model="gpt-6-luna",  # GPT-6 models reject `temperature`
+    # Default reasoning. "none" saved only ~0.3s per call live and made the model
+    # second-guess pre-analysis matches it couldn't read (an extra ~2s call)
     # Cache only where we mark it: after the static system prompt (see agent_node)
     prompt_cache_options={"mode": "explicit"},
     model_kwargs={"tool_choice": "required"},  # Force tool usage at model level
@@ -124,7 +126,10 @@ FORMATTING TIME INPUTS PROPERLY:
 
 def _build_tool_reference_section() -> str:
     """Tool Reference - Complete tool catalog with usage notes"""
-    return """TOOL REFERENCE:
+    return _TOOL_REFERENCE + "\n\n" + _CALENDAR_SELECTION_RULES
+
+
+_TOOL_REFERENCE = """TOOL REFERENCE:
 
 INTERNAL TOOLS (for gathering information - do NOT terminate):
 - read_schedule(start_time, end_time): Get events in a time window
@@ -138,30 +143,33 @@ EXTERNAL TOOLS (terminate agent and show results to user):
 - request_create_event(summary, calendar_id, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None): Request to create event. Use start_time/end_time for timed events, or start_date/end_date for all-day events (e.g., birthdays, holidays). Only include description/location if explicitly requested or necessary.
 - request_update_event(event_id, calendar_id, summary=None, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None): Request to update event. Use start_time/end_time for timed events, or start_date/end_date for all-day events. Only include fields that need updating. Only include description if explicitly requested.
 - request_delete_event(event_id, calendar_id): Request to delete event
-- do_nothing(reason): Handle unsupported/unclear requests
+- do_nothing(reason): Handle unsupported/unclear requests"""
 
-CALENDAR SELECTION RULES (for write operations):
+_CALENDAR_SELECTION_RULES = """CALENDAR SELECTION RULES (for write operations):
 For request_create_event, request_update_event, and request_delete_event:
 - You MUST call list_calendars() first and ONLY use calendar_id values from its results. list_calendars() returns only calendars with write access (access_role: "writer" or "owner").
 - NEVER use calendar_id values from event read results (read_schedule, search_events, read_event) - these may be read-only calendars.
 - Prefer the primary calendar (is_primary: true) if available, otherwise use any calendar from list_calendars().
 - calendar_id values must include the full format with @ suffix (e.g., "id@group.calendar.google.com") - NEVER truncate or modify them."""
 
+# Per-kind replacement for _CALENDAR_SELECTION_RULES: updates and deletes act on an
+# existing event, which can only stay on its own calendar (validation checks write access)
+_EXISTING_EVENT_CALENDAR_RULE = """CALENDAR SELECTION (existing events):
+- Use the calendar_id that came with the event (from find_event, search_events or read_schedule), exactly as given.
+- Do NOT call list_calendars() for this - an existing event stays on its calendar, and write access is checked automatically."""
+
 
 def _build_query_patterns_section() -> str:
     """Query Intent Patterns - Decision flows for each query type"""
-    return """QUERY INTENT PATTERNS:
+    return _QUERY_PATTERNS_HEAD + "".join(_QUERY_PATTERNS[kind] for kind in REQUEST_KINDS)
 
-1. VIEW SCHEDULE
-Query intent: User wants to see their schedule for a time period
-Pattern: show_schedule(start_time, end_time)
-Example: "What is on my schedule tomorrow?" → show_schedule with 12:00 AM and 11:59 PM tomorrow
 
-2. FIND SPECIFIC EVENT
-Query intent: User wants to know about a specific event (by name or position)
-Pattern: search_events(keywords, start_time, end_time) → EXTRACT event_id and calendar_id from results → show_event(event_id, calendar_id)
+_QUERY_PATTERNS_HEAD = """QUERY INTENT PATTERNS:
 
-KEYWORD EXTRACTION FOR SEARCH:
+"""
+
+# Reused by every request kind that has to locate an existing event
+_SEARCH_GUIDE = """KEYWORD EXTRACTION FOR SEARCH:
 - Extract key terms from the user's query, especially names and event types
 - Remove filler words: "meeting", "with", "my", "the", "a", "an", "find", "show", etc.
 - For person names: extract just the name (e.g., "meeting with andrew" → "andrew")
@@ -183,12 +191,26 @@ FALLBACK STRATEGIES IF INITIAL SEARCH RETURNS NO RESULTS:
   * → Try search_events("jude", ...) or expand date range
   * → If still no results and date is known: read_schedule(...) → manually find event with "andrew" or "jude" in summary
 
-MANDATORY: After search_events returns results, you MUST extract the event_id and calendar_id from the matching event in the results list, then immediately call show_event with those values.
+"""
+
+_QUERY_PATTERNS = {
+    "show_schedule": """1. VIEW SCHEDULE
+Query intent: User wants to see their schedule for a time period
+Pattern: show_schedule(start_time, end_time)
+Example: "What is on my schedule tomorrow?" → show_schedule with 12:00 AM and 11:59 PM tomorrow
+
+""",
+    "find_event": """2. FIND SPECIFIC EVENT
+Query intent: User wants to know about a specific event (by name or position)
+Pattern: search_events(keywords, start_time, end_time) → EXTRACT event_id and calendar_id from results → show_event(event_id, calendar_id)
+
+""" + _SEARCH_GUIDE + """MANDATORY: After search_events returns results, you MUST extract the event_id and calendar_id from the matching event in the results list, then immediately call show_event with those values.
 Optional: If you need full event details, call read_event(event_id, calendar_id) before show_event
 Example: "When is my haircut this weekend?" → search_events("haircut", Saturday 12:00 AM, Sunday 11:59 PM) → extract event_id and calendar_id from matching result → show_event(event_id, calendar_id)
 Example: "When is my first event tomorrow?" → read_schedule(tomorrow 12:00 AM, tomorrow 11:59 PM) → identify first event by start time → extract event_id and calendar_id → show_event(event_id, calendar_id)
 
-3. CREATE EVENT
+""",
+    "create_event": """3. CREATE EVENT
 Query intent: User wants to schedule/create a new event
 Pattern: list_calendars() → read_schedule(start_time, end_time) → request_create_event(event_details, calendar_id)
 
@@ -206,7 +228,8 @@ Description parameter rules: Only include description parameter if:
 Example: "Can you schedule a haircut for me next week?" → list_calendars() → read_schedule(Monday 12:00 AM, Friday 11:59 PM) → request_create_event(summary: "haircut", start_time: available_time, end_time: available_time + duration, calendar_id: selected_from_list_calendars) - NO description parameter
 Example: "Schedule a team meeting next Tuesday with description 'Discuss Q1 goals'" → list_calendars() → request_create_event(..., description: "Discuss Q1 goals", calendar_id: selected_from_list_calendars)
 
-4. UPDATE EVENT
+""",
+    "update_event": """4. UPDATE EVENT
 Query intent: User wants to modify an existing event
 Pattern: search_events(keywords, start_time, end_time) → EXTRACT event_id and calendar_id from results → request_update_event(event_id, calendar_id, new_details)
 
@@ -224,7 +247,8 @@ Description parameter rules: Only include description parameter if:
 
 Example: "Can you move my haircut to Thursday next week?" → search_events("haircut", Monday 12:00 AM, Friday 11:59 PM) → extract event_id and calendar_id from first result → read_schedule(Thursday 12:00 AM, Thursday 11:59 PM) → request_update_event(event_id, calendar_id, start_time: new_thursday_time, end_time: new_thursday_time + duration) - NO description parameter
 
-5. DELETE EVENT
+""",
+    "delete_event": """5. DELETE EVENT
 Query intent: User wants to remove/cancel an event
 Pattern: search_events(keywords, start_time, end_time) → EXTRACT event_id and calendar_id from results → request_delete_event(event_id, calendar_id)
 
@@ -234,12 +258,18 @@ Calendar selection: Must use calendar_id from search result (cannot change it).
 
 Example: "Can you remove my haircut this weekend?" → search_events("haircut", Saturday 12:00 AM, Sunday 11:59 PM) → extract event_id and calendar_id from first result → request_delete_event(event_id, calendar_id)
 
-6. UNSUPPORTED REQUEST
+""",
+    "other": """6. UNSUPPORTED REQUEST
 Query intent: Request is not a calendar operation or is unclear
 Pattern: do_nothing(reason)
 
 Example: "Hello, how are you?" → do_nothing("Unsupported request")
-"""
+""",
+}
+
+# Order matches the patterns above; "other" has no pattern of its own beyond do_nothing
+REQUEST_KINDS = ["show_schedule", "find_event", "create_event", "update_event", "delete_event", "other"]
+
 
 def _build_tool_result_processing_section() -> str:
     """Tool Result Processing - How to extract and use data from tool responses"""
@@ -272,55 +302,190 @@ If you receive a validation error after calling request_create_event, request_up
 - Always retry with the corrected information when validation errors occur"""
 
 
-def _build_examples_section() -> str:
-    """Examples & Trajectories - Concrete examples showing complete flows"""
-    return """EXAMPLES & TRAJECTORIES:
+def _build_examples_section(kind: Optional[str] = None) -> str:
+    """Examples & Trajectories - Concrete examples showing complete flows (only that kind's when given)"""
+    examples = [text for example_kind, text in _EXAMPLES if kind is None or example_kind == kind]
+    if not examples:
+        return ""
+    return _EXAMPLES_HEAD + "\n\n".join(f"{n}. {text}" for n, text in enumerate(examples, 1))
 
-1. "What is on my schedule tomorrow?"
-   → show_schedule(start_time: tomorrow 12:00 AM, end_time: tomorrow 11:59 PM)
 
-2. "When is my haircut this weekend?"
+_EXAMPLES_HEAD = """EXAMPLES & TRAJECTORIES:
+
+"""
+
+# (request kind, example) pairs
+_EXAMPLES = [
+    ("show_schedule", """"What is on my schedule tomorrow?"
+   → show_schedule(start_time: tomorrow 12:00 AM, end_time: tomorrow 11:59 PM)"""),
+    ("find_event", """"When is my haircut this weekend?"
    → search_events(keywords: "haircut", start_time: Saturday 12:00 AM, end_time: Sunday 11:59 PM)
-   → show_event(event_id: found_event_id, calendar_id: found_calendar_id)
-
-3. "Can you remove my haircut this weekend?"
+   → show_event(event_id: found_event_id, calendar_id: found_calendar_id)"""),
+    ("delete_event", """"Can you remove my haircut this weekend?"
    → search_events(keywords: "haircut", start_time: Saturday 12:00 AM, end_time: Sunday 11:59 PM)
-   → request_delete_event(event_id: found_event_id, calendar_id: found_calendar_id)
-
-4. "Can you schedule a haircut for me next week?"
+   → request_delete_event(event_id: found_event_id, calendar_id: found_calendar_id)"""),
+    ("create_event", """"Can you schedule a haircut for me next week?"
    → list_calendars() → read_schedule(start_time: Monday 12:00 AM, end_time: Friday 11:59 PM)
-   → request_create_event(summary: "haircut", start_time: available_time, end_time: available_time + duration, calendar_id: selected_from_list_calendars)
-
-5. "Can you move my haircut to Thursday next week?"
+   → request_create_event(summary: "haircut", start_time: available_time, end_time: available_time + duration, calendar_id: selected_from_list_calendars)"""),
+    ("update_event", """"Can you move my haircut to Thursday next week?"
    → search_events(keywords: "haircut", start_time: Monday 12:00 AM, end_time: Friday 11:59 PM)
    → read_schedule(start_time: Thursday 12:00 AM, end_time: Thursday 11:59 PM)
-   → request_update_event(event_id: found_event_id, calendar_id: found_calendar_id, start_time: new_thursday_time, end_time: new_thursday_time + duration)
-
-6. "Show me my schedule on Friday"
+   → request_update_event(event_id: found_event_id, calendar_id: found_calendar_id, start_time: new_thursday_time, end_time: new_thursday_time + duration)"""),
+    ("show_schedule", """"Show me my schedule on Friday"
    → show_schedule(start_time: Friday 12:00 AM, end_time: Friday 11:59 PM)
-   Note: If today is before Friday, use this week's Friday; if today is Friday or after, use next week's Friday
-
-7. "What's on my calendar next Thursday?"
+   Note: If today is before Friday, use this week's Friday; if today is Friday or after, use next week's Friday"""),
+    ("show_schedule", """"What's on my calendar next Thursday?"
    → show_schedule(start_time: next Thursday 12:00 AM, end_time: next Thursday 11:59 PM)
-   Note: "next Thursday" means Thursday of next week (after this weekend)
-
-8. "Show me this weekend"
+   Note: "next Thursday" means Thursday of next week (after this weekend)"""),
+    ("show_schedule", """"Show me this weekend"
    → show_schedule(start_time: Saturday 00:00:00, end_time: Sunday 23:59:59)
-   CRITICAL: Weekend means Saturday-Sunday ONLY. Find the next Saturday from today, then use that Saturday and the following Sunday. Verify the dates are Saturday-Sunday before calling the tool.
-
-9. "What's on my calendar next weekend?"
+   CRITICAL: Weekend means Saturday-Sunday ONLY. Find the next Saturday from today, then use that Saturday and the following Sunday. Verify the dates are Saturday-Sunday before calling the tool."""),
+    ("show_schedule", """"What's on my calendar next weekend?"
    → show_schedule(start_time: next weekend Saturday 00:00:00, end_time: next weekend Sunday 23:59:59)
-   CRITICAL: Weekend means Saturday-Sunday ONLY. Calculate this weekend first, then add 7 days to get next weekend's Saturday. Verify the dates are Saturday-Sunday before calling the tool.
-
-10. "Put Lola's birthday on my calendar on February 2."
+   CRITICAL: Weekend means Saturday-Sunday ONLY. Calculate this weekend first, then add 7 days to get next weekend's Saturday. Verify the dates are Saturday-Sunday before calling the tool."""),
+    ("create_event", """"Put Lola's birthday on my calendar on February 2."
    → list_calendars() → request_create_event(summary: "Lola's Birthday", start_date: "2026-02-02", end_date: "2026-02-03", calendar_id: selected_from_list_calendars)
-   Note: Birthdays are all-day events - use start_date and end_date (end_date is exclusive, so use the next day for single-day events)."""
+   Note: Birthdays are all-day events - use start_date and end_date (end_date is exclusive, so use the next day for single-day events)."""),
+]
 
+
+def _build_find_event_section() -> str:
+    """Find-event override - only included when AGENT_FIND_EVENT=jev offers the find_event tool"""
+    if not FIND_EVENT_ENABLED:
+        return ""
+    return """FINDING A SPECIFIC EVENT (OVERRIDES THE SEARCH STEPS ABOVE):
+For FIND SPECIFIC EVENT, UPDATE EVENT and DELETE EVENT, use find_event instead of search_events and read_schedule:
+1. Call find_event(description, start_time, end_time).
+   - description: the user's own words for the event, with any people, places or time hints. Do not reduce it to keywords.
+   - start_time / end_time: the window the user implies (e.g. "tomorrow" = that whole day). If they give no time, use today through 14 days ahead.
+2. Act on the status:
+   - "match": use event.id and event.calendar_id directly. FIND → show_event. DELETE → request_delete_event. UPDATE → request_update_event (keep the original duration unless told otherwise; read the original times from the event). No other lookups are needed, including list_calendars.
+   - "ambiguous": act on the first (most likely) candidate as if it were the match. Never ask the user which one they meant.
+   - "none": call find_event once more with a wider window if the user's time hint was vague; otherwise call do_nothing saying no matching event was found in that window.
+   - "too_many": call find_event again with a narrower window.
+   - "error": fall back to the search_events steps above.
+
+Example: "Move SPIKE tomorrow to 2pm"
+   → find_event(description: "SPIKE tomorrow", start_time: tomorrow 12:00 AM, end_time: tomorrow 11:59 PM)
+   → status "match" → request_update_event(event_id, calendar_id, start_time: tomorrow 2:00 PM, end_time: 2:00 PM + original duration)"""
+
+
+_USING_PREPASS_SECTION = """USING PRE-ANALYSIS:
+A PRE-ANALYSIS block may follow, listing the events an automatic search found most likely to be the one the user means.
+It is the same search find_event runs, so calling find_event again over that range returns the same answer. It matches
+on meaning, not just words: a title that doesn't repeat the user's words can still be right (e.g. "my workout" →
+"Barry's", a gym class). It may know what an unfamiliar title refers to when you don't, so a likely event with
+probability 0.9 or higher on the right day is the answer even if you can't tell from the title. Below that, trust it
+unless it clearly contradicts the request (wrong day, wrong kind of event).
+- If the first likely event fits the request, use its event_id and calendar_id directly and call the answer tool now:
+  FIND → show_event, DELETE → request_delete_event, UPDATE → request_update_event.
+  For UPDATE, keep the original duration unless told otherwise (the original start and end are listed). Don't search again.
+- If a runner-up clearly fits better, use that one instead.
+- If the listed events don't fit, find the event with your tools (find_event, search_events, read_schedule).
+- If the block says nothing matched, that range has already been searched. Search again only if the request clearly
+  points outside it (e.g. a date months away); otherwise call do_nothing saying no matching event was found.
+- Never ask the user which event they meant."""
+
+
+_USING_CALENDAR_LIST_SECTION = """USING THE CALENDAR LIST:
+A WRITABLE CALENDARS block may follow. It is exactly what list_calendars() would return, so when it is present
+don't call list_calendars() - pick the calendar from the block (prefer the primary one) and continue."""
+
+
+def _build_calendar_list_section(calendars: Optional[List[Dict[str, Any]]]) -> str:
+    """Per-request writable calendars for create requests (sent by the backend; saves a list_calendars call)"""
+    if not calendars:
+        return ""
+    lines = ["WRITABLE CALENDARS (same as list_calendars()):"]
+    for cal in calendars:
+        primary = " · primary" if cal.get("is_primary") else ""
+        lines.append(f'- {cal.get("name")} · calendar_id: {cal.get("id")} · access_role: {cal.get("access_role")}{primary}')
+    return "\n".join(lines)
+
+
+def _event_time_iso(value: Any) -> str:
+    """ISO start/end from a Google {dateTime} / {date} dict, or the string itself."""
+    if isinstance(value, dict):
+        return value.get("dateTime") or value.get("date") or ""
+    return value or ""
+
+
+def _build_prepass_event_section(prepass: Optional[Dict[str, Any]]) -> str:
+    """Per-request evidence from the stage 2 pre-pass (sent after the time context)"""
+    if not prepass:
+        return ""
+    lines = [
+        "PRE-ANALYSIS (automatic; may be wrong - if it doesn't fit the request, use your tools)",
+        f"Searched {prepass.get('event_count', 0)} events from {prepass.get('searched_from')} to {prepass.get('searched_to')}.",
+    ]
+    top = prepass.get("top") or []
+    if not top:
+        lines.append("No event in that range matched the request. Don't search the same range again.")
+        return "\n".join(lines)
+    lines.append("Likely event:")
+    for n, event in enumerate(top, 1):
+        calendar = event.get("calendar_name") or event.get("calendar_id")
+        lines.append(f'  {n}. "{event.get("summary")}" · {event.get("when")} · calendar: {calendar} (probability {event.get("probability")})')
+        lines.append(f'     event_id: {event.get("id")} · calendar_id: {event.get("calendar_id")}')
+        lines.append(f'     start: {_event_time_iso(event.get("start"))} · end: {_event_time_iso(event.get("end"))}')
+    if prepass.get("status") == "none":
+        lines.append("(The search leaned toward none of these being the event.)")
+    return "\n".join(lines)
+
+
+_KIND_LABELS = {
+    "show_schedule": "SHOW SCHEDULE",
+    "find_event": "FIND A SPECIFIC EVENT",
+    "create_event": "CREATE AN EVENT",
+    "update_event": "UPDATE AN EVENT",
+    "delete_event": "DELETE AN EVENT",
+}
+
+
+def _build_request_kind_section(kind: str) -> str:
+    """Request kind from the pre-pass - tells the agent which instructions below apply"""
+    return f"""REQUEST KIND:
+An automatic check identified this request as: {_KIND_LABELS[kind]}.
+The instructions below cover this kind of request only. If the request is clearly something else, still handle what the user actually asked with your tools, or call do_nothing if it is unsupported."""
+
+
+def _build_kind_sections(kind: str) -> List[str]:
+    """Only the instructions a request of this kind needs (smart disclosure)"""
+    finds_existing_event = kind in ("find_event", "update_event", "delete_event")
+    writes = kind in ("create_event", "update_event", "delete_event")
+
+    if kind == "create_event":
+        calendar_rules = _CALENDAR_SELECTION_RULES
+    elif kind in ("update_event", "delete_event"):
+        calendar_rules = _EXISTING_EVENT_CALENDAR_RULE
+    else:
+        calendar_rules = ""
+
+    patterns = _QUERY_PATTERNS_HEAD
+    if kind in ("update_event", "delete_event"):
+        patterns += _SEARCH_GUIDE  # Already part of the find_event pattern
+    patterns += _QUERY_PATTERNS[kind] + _QUERY_PATTERNS["other"]
+
+    return [
+        _build_agent_identity_section(),
+        _build_architecture_section(),
+        _build_request_kind_section(kind),
+        _TOOL_REFERENCE,
+        calendar_rules,
+        patterns,
+        _build_find_event_section() if finds_existing_event else "",
+        _USING_PREPASS_SECTION if finds_existing_event else "",
+        _USING_CALENDAR_LIST_SECTION if kind == "create_event" else "",
+        _build_tool_result_processing_section() if kind != "show_schedule" else "",
+        _build_error_handling_section() if writes else "",
+        _build_examples_section(kind),
+    ]
 
 
 def _build_system_prompt(
     current_time: str,
-    user_timezone: str
+    user_timezone: str,
+    request_kind: Optional[str] = None,
 ) -> tuple[str, str]:
     """Assemble the system prompt as (static instructions, per-request time context).
 
@@ -328,6 +493,9 @@ def _build_system_prompt(
     cache is only checked at message boundaries, so a single message that ends with the
     current time is never reused across requests; splitting it puts a boundary right
     after the ~6k tokens that never change.
+
+    When the pre-pass identified the request kind, only that kind's instructions are
+    included. The static block is still fixed per kind, so each kind caches separately.
     """
     # Parse ISO string to datetime object
     try:
@@ -347,15 +515,20 @@ def _build_system_prompt(
         raise ValueError(f"Invalid current_time format: {current_time}") from e
     
     # Everything that never changes goes in the first message so it can be cached
-    static_sections = [
-        _build_agent_identity_section(),
-        _build_architecture_section(),
-        _build_tool_reference_section(),  # Includes calendar selection rules for write operations
-        _build_query_patterns_section(),  # Includes calendar selection in CREATE/UPDATE/DELETE patterns
-        _build_tool_result_processing_section(),
-        _build_error_handling_section(),
-        _build_examples_section(),
-    ]
+    if request_kind in _KIND_LABELS:
+        static_sections = _build_kind_sections(request_kind)
+    else:
+        # Unknown, unsure or "other": the full prompt, exactly as before the pre-pass
+        static_sections = [
+            _build_agent_identity_section(),
+            _build_architecture_section(),
+            _build_tool_reference_section(),  # Includes calendar selection rules for write operations
+            _build_query_patterns_section(),  # Includes calendar selection in CREATE/UPDATE/DELETE patterns
+            _build_find_event_section(),  # Empty unless AGENT_FIND_EVENT=jev
+            _build_tool_result_processing_section(),
+            _build_error_handling_section(),
+            _build_examples_section(),
+        ]
     
     static_prompt = "\n\n".join(filter(None, static_sections))  # Filter out empty sections
     time_prompt = _build_time_date_handling_section(current_datetime, user_timezone)
@@ -385,6 +558,8 @@ class State(TypedDict):
     current_time: Optional[str]  # ISO format datetime string in user's timezone with offset (e.g., "2026-01-13T08:47:00-08:00")
     timezone: Optional[str]  # IANA timezone name (e.g., "America/Los_Angeles")
     current_day_of_week: Optional[str]  # Full day name (e.g., "Monday", "Tuesday")
+    request_kind: Optional[str]  # Pre-pass request kind when Jev was sure (e.g. "delete_event"); None otherwise
+    prepass_event: Optional[dict]  # Pre-pass likely events for find/update/delete (status, top, searched_from/to); None otherwise
 
 
 class OutputState(TypedDict):
@@ -430,7 +605,7 @@ def agent_node(state: State) -> Dict[str, Any]:
         raise ValueError("current_day_of_week is required in state but was not provided")
     
     # Build system prompt from organized sections
-    static_prompt, time_prompt = _build_system_prompt(current_time, user_timezone)
+    static_prompt, time_prompt = _build_system_prompt(current_time, user_timezone, state.get("request_kind"))
     system_messages = [
         # Breakpoint after the static block so every request reuses it from the cache
         SystemMessage(content=[{
@@ -440,6 +615,13 @@ def agent_node(state: State) -> Dict[str, Any]:
         }]),
         SystemMessage(content=time_prompt),
     ]
+    prepass_section = _build_prepass_event_section(state.get("prepass_event"))
+    if prepass_section:
+        system_messages.append(SystemMessage(content=prepass_section))
+    if state.get("request_kind") == "create_event":
+        calendar_section = _build_calendar_list_section((state.get("auth") or {}).get("writable_calendars"))
+        if calendar_section:
+            system_messages.append(SystemMessage(content=calendar_section))
     
     # Initialize messages if empty
     if not messages:
