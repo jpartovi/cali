@@ -1,4 +1,5 @@
 # Portable API image. Render, Fly, Cloud Run, and Compose all run this.
+# Build from the repo root (docker build -f backend/Dockerfile .) so the agent package is included.
 FROM python:3.12-slim-bookworm
 
 COPY --from=ghcr.io/astral-sh/uv:0.12 /uv /uvx /bin/
@@ -11,11 +12,13 @@ ENV UV_COMPILE_BYTECODE=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"
 
-COPY pyproject.toml uv.lock ./
+COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project \
     && rm -rf /root/.cache/uv
 
-COPY . .
+COPY backend/ .
+# The agent graph runs in this process (services/agent_runner.py)
+COPY agent/ ./agent/
 
 RUN groupadd --gid 1000 appuser \
     && useradd --uid 1000 --gid appuser --create-home appuser \

@@ -15,8 +15,8 @@ dependencies = [
     "httpx[http2]>=0.27.2",
     "cryptography>=42.0.0",
     "langgraph-sdk>=0.2.9",
-    "langgraph>=0.2.53",
-    "langchain-core>=0.2.27",
+    "langgraph>=1.2.15",
+    "langchain-core>=1.6.10",
     "google-api-python-client>=2.143.0",
     "google-auth-httplib2>=0.2.1",
     "google-auth-oauthlib>=1.2.3",
@@ -24,6 +24,9 @@ dependencies = [
     "python-multipart>=0.0.20",
     "phonenumbers>=8.13.0",
     "typesafe-sdk>=0.7.4",
+    "langchain-openai>=1.7.1",
+    "langsmith>=0.14.8",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]

@@ -28,6 +28,7 @@ from core.config import get_settings
 from core.timing_logger import log_step, log_start
 from domains.transcription.service import TranscriptionService
 from services import agent_calendar_service
+from services.agent_runner import RECURSION_LIMIT, run_agent
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +158,26 @@ def _writable_calendars(user_id: str) -> list:
     ]
 
 
+async def _run_remote_agent(settings, input_state: dict, user_id: str) -> dict:
+    """Run the agent on the LangGraph server at LANGGRAPH_AGENT_URL (AGENT_IN_PROCESS=false)."""
+    is_local_agent = urlparse(settings.langgraph_agent_url).hostname in {"localhost", "127.0.0.1"}
+    api_key = settings.langsmith_api_key or settings.langgraph_api_key
+    if api_key is None and not is_local_agent:
+        logger.error(f"LangGraph agent API key is missing for remote agent URL user_id={user_id}")
+        raise HTTPException(
+            status_code=500,
+            detail="Agent service is not configured with LangSmith authentication credentials."
+        )
+
+    client = get_client(url=settings.langgraph_agent_url, api_key=api_key)
+    return await client.runs.wait(
+        thread_id=None,
+        assistant_id="agent",
+        input=input_state,
+        config={"recursion_limit": RECURSION_LIMIT},
+    )
+
+
 class AgentActionRequest(BaseModel):
     """Request model for agent action endpoint."""
     query: str
@@ -267,27 +288,7 @@ async def agent_action(
                 detail="Query text is required and cannot be empty.",
             )
 
-        # Create LangGraph SDK client and invoke agent
         settings = get_settings()
-
-        parsed_url = urlparse(settings.langgraph_agent_url)
-        is_local_agent = parsed_url.hostname in {"localhost", "127.0.0.1"}
-
-        api_key = settings.langsmith_api_key or settings.langgraph_api_key
-
-        if api_key is None and not is_local_agent:
-            logger.error(
-                f"LangGraph agent API key is missing for remote agent URL user_id={current_user.id}"
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Agent service is not configured with LangSmith authentication credentials."
-            )
-
-        client = get_client(
-            url=settings.langgraph_agent_url,
-            api_key=api_key,
-        )
 
         # Get user timezone from users table
         timezone_start = time.time()
@@ -333,13 +334,10 @@ async def agent_action(
 
         # Invoke and wait for completion
         langgraph_start = time.time()
-        result = await client.runs.wait(
-            thread_id=None,
-            assistant_id="agent",
-            input=input_state,
-            # Normal flows finish in ~15 graph steps; fail fast instead of looping on a repeated tool error.
-            config={"recursion_limit": 30},
-        )
+        if settings.agent_in_process:
+            result = await run_agent(input_state)
+        else:
+            result = await _run_remote_agent(settings, input_state, current_user.id)
         langgraph_duration = time.time() - langgraph_start
         log_step("backend.api.action.langgraph_invoke", langgraph_duration, details=f"response_type={result.get('type')}")
 

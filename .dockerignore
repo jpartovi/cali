@@ -1,0 +1,20 @@
+# The backend image (backend/Dockerfile) builds from the repo root so it can include the agent package.
+# Send only those two directories to the build.
+*
+!backend
+!agent
+
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage
+**/htmlcov
+**/.env
+**/.env.*
+**/*.md
+**/*_timing.log
+**/.DS_Store

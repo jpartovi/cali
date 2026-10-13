@@ -55,6 +55,9 @@ class Settings(BaseSettings):
         return f"{base}/{path}"
 
     # LangGraph Agent configuration
+    # Run the agent graph inside this process (services/agent_runner.py). False sends requests to
+    # the LangGraph server at langgraph_agent_url instead.
+    agent_in_process: bool = True
     langgraph_agent_url: str = "http://localhost:8000"
     langgraph_api_key: str | None = None
     langsmith_api_key: str | None = None

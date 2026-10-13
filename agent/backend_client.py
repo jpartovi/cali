@@ -22,8 +22,13 @@ class BackendClient(CalendarClient):
     
     def __init__(self):
         """Initialize backend client with base URL from environment."""
-        # Try BACKEND_URL first (matches .env.example), fall back to BACKEND_API_URL for backwards compatibility
-        self.base_url = os.getenv("BACKEND_URL") or os.getenv("BACKEND_API_URL", "http://localhost:8000")
+        # AGENT_BACKEND_URL is set when the agent runs inside the backend (its own local port).
+        # Otherwise BACKEND_URL (matches .env.example), then BACKEND_API_URL for backwards compatibility
+        self.base_url = (
+            os.getenv("AGENT_BACKEND_URL")
+            or os.getenv("BACKEND_URL")
+            or os.getenv("BACKEND_API_URL", "http://localhost:8000")
+        )
         # Remove trailing slash if present
         self.base_url = self.base_url.rstrip("/")
         self.timeout = 30.0  # 30 second timeout for API calls

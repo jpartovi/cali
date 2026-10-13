@@ -5,7 +5,7 @@ services:
     name: cali-api
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
+    dockerContext: .
     healthCheckPath: /healthz
     envVars:
       - key: BACKEND_URL
@@ -24,6 +24,22 @@ services:
         value: /api/v1/calendars/accounts/oauth/callback
       - key: GOOGLE_OAUTH_APP_REDIRECT_URI
         value: cali://oauth/google
+      # The agent graph runs inside this service. AGENT_IN_PROCESS=false sends requests to
+      # the LangGraph deployment at LANGGRAPH_AGENT_URL instead.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: LANGSMITH_TRACING
+        sync: false
+      - key: LANGSMITH_PROJECT
+        sync: false
+      - key: AGENT_FIND_EVENT
+        sync: false
+      - key: TYPESAFE_API_KEY
+        sync: false
+      - key: AGENT_REQUEST_CLASSIFIER
+        sync: false
+      - key: AGENT_PREPASS_EVENT
+        sync: false
       - key: LANGGRAPH_AGENT_URL
         sync: false
       - key: LANGSMITH_API_KEY
@@ -54,7 +70,7 @@ services:
     name: cali-calendar-listener
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
-    dockerContext: ./backend
+    dockerContext: .
     schedule: "* * * * *"
     dockerCommand: python scripts/trigger_calendar_listener.py
     envVars:

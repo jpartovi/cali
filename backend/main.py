@@ -19,10 +19,15 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan context manager."""
+    from core.config import get_settings
     from domains.live_activities.service import register_live_activity_handler
+    from services.agent_runner import get_agent_graph
 
     logger.info("Starting Cali backend API...")
     register_live_activity_handler()
+    if get_settings().agent_in_process:
+        # Load the agent now so the first request doesn't wait on importing LangChain
+        get_agent_graph()
     yield
     logger.info("Shutting down Cali backend API...")
 

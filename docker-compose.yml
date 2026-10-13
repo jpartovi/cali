@@ -2,13 +2,14 @@
 #
 #   docker compose up --build backend
 #
-# The agent runs on the host (`BACKEND_URL=http://localhost:8000 langgraph dev`, port 2024);
-# localhost inside the container is the container itself, so reach it via host.docker.internal.
+# The agent graph runs inside the backend. To use a separate LangGraph server instead, run
+# `BACKEND_URL=http://localhost:8000 langgraph dev` on the host (port 2024) and set AGENT_IN_PROCESS=false;
+# localhost inside the container is the container itself, so it's reached via host.docker.internal.
 services:
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
     env_file:
@@ -16,7 +17,10 @@ services:
     environment:
       PORT: "8000"
       BACKEND_URL: http://localhost:8000
+      AGENT_IN_PROCESS: ${AGENT_IN_PROCESS:-true}
       LANGGRAPH_AGENT_URL: http://host.docker.internal:2024
+      # TypeSafe Jev event finder as an agent tool
+      AGENT_FIND_EVENT: ${AGENT_FIND_EVENT:-}
       TIMING_LOG_PATH: /tmp/backend_timing.log # read with: docker compose exec backend cat /tmp/backend_timing.log
       # Stage 1 Jev pre-pass; turn on with: AGENT_REQUEST_CLASSIFIER=true docker compose up -d backend
       AGENT_REQUEST_CLASSIFIER: ${AGENT_REQUEST_CLASSIFIER:-false}
