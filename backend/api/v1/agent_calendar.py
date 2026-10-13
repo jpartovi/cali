@@ -40,6 +40,28 @@ def _parse_datetime_or_date(dt_str: str) -> datetime:
         raise ValueError(f"Invalid datetime format: {dt_str}") from e
 
 
+def _to_user_tz(value: Any, tz: ZoneInfo) -> Any:
+    """Express an event start/end in the user's timezone.
+
+    Google returns each event in its own calendar's timezone, so without this the
+    agent sees mixed offsets (e.g. -07:00 next to -04:00) and compares clock times
+    across zones. All-day dates are left as they are.
+    """
+    if isinstance(value, dict):
+        if value.get("dateTime"):
+            local = _parse_datetime_or_date(value["dateTime"]).astimezone(tz)
+            return {**value, "dateTime": local.isoformat(), "timeZone": tz.key}
+        return value
+    if isinstance(value, str) and len(value) > 10:
+        return _parse_datetime_or_date(value).astimezone(tz).isoformat()
+    return value
+
+
+def _localize_event(event: Dict[str, Any], tz: ZoneInfo) -> Dict[str, Any]:
+    """Copy of an event with start and end in the user's timezone."""
+    return {**event, "start": _to_user_tz(event.get("start"), tz), "end": _to_user_tz(event.get("end"), tz)}
+
+
 @router.get("")
 async def list_calendars(
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -170,7 +192,8 @@ async def get_schedule(
                 "status": event.get("status"),
             })
         
-        return {"events": formatted_events}
+        user_tz = ZoneInfo(user_timezone)
+        return {"events": [_localize_event(e, user_tz) for e in formatted_events]}
         
     except HTTPException:
         raise
@@ -277,7 +300,8 @@ async def search_events(
                 "location": event.get("location"),
             })
         
-        return {"events": formatted_events}
+        user_tz = ZoneInfo(get_user_timezone(current_user.id))
+        return {"events": [_localize_event(e, user_tz) for e in formatted_events]}
         
     except HTTPException:
         raise
@@ -325,7 +349,7 @@ async def get_event(
         if "calendar_id" not in event:
             event["calendar_id"] = calendar_id
         
-        return event
+        return _localize_event(event, ZoneInfo(get_user_timezone(current_user.id)))
         
     except GoogleCalendarEventNotFoundError as e:
         raise HTTPException(
