@@ -245,64 +245,89 @@ final class AgentViewModel: ObservableObject {
                     print("Transcribed: \"\(transcribedText)\"")
                 }
 
-                let startingToken = try await resolveAccessToken(initial: accessToken)
-
-                // Clear any existing highlights, notices, or confirmations from previous agent action state
-                agentAction = nil
-                focusEvent = nil
-                noticeMessage = nil
-
-                // Send to agent
-                let agentStart = Date()
-                let (result, tokenUsed) = try await sendToAgent(
-                    query: transcribedText,
-                    accessToken: startingToken
-                )
-                let agentDuration = Date().timeIntervalSince(agentStart)
-                await timingLogger.logStep("frontend.send_to_agent", duration: agentDuration, details: "response_type=\(result.agentResponse.typeString)")
-
-                // Handle response and display UI
-                let handleStart = Date()
-                try await handle(agentResponse: result.agentResponse, accessToken: tokenUsed)
-                let handleDuration = Date().timeIntervalSince(handleStart)
-                await timingLogger.logStep("frontend.handle_response", duration: handleDuration)
-
-                // Clear transcription text when agent response arrives
-                transcriptionText = nil
-
-                displayState = .completed(result: result)
-
-                // Log total flow duration
-                let totalDuration = Date().timeIntervalSince(flowStart)
-                await timingLogger.logStep("frontend.total_flow", duration: totalDuration)
-
-                // Set notice message for no-action responses (after clearing transcription)
-                switch result.agentResponse {
-                case .noAction(let response):
-                    setNoticeMessage(response.metadata.reason)
-                case .error(let error):
-                    // Handle agent error - this is an agent mistake, not a user error
-                    // Log full error details for debugging (verbose internal logging)
-                    print("Agent error handled: \(error.message)")
-                    // AgentErrorResponse conforms to Error, so we can pass it directly
-                    // This will show brief, user-friendly message to user
-                    handleAgentError(error as Error, context: "Agent processing")
-                default:
-                    // Clear notice message for successful actions
-                    clearNoticeMessage()
-                }
-
-                if let responseString = result.responseString {
-                    let formattedResponse = formatAgentResponse(
-                        statusCode: result.statusCode,
-                        jsonString: responseString
-                    )
-                    print(formattedResponse)
-                }
+                try await runAgentQuery(transcribedText, accessToken: accessToken, flowStart: flowStart)
             } catch {
                 // Errors during agent action flow should use agent error handler
                 handleAgentError(error, context: "Agent processing")
             }
+        }
+    }
+
+    /// Sends a typed prompt through the same agent flow as a dictated one.
+    func sendTypedPrompt(_ text: String, accessToken: String?) {
+        let query = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, !isRecording else { return }
+        if case .uploading = displayState { return }
+
+        let flowStart = Date()
+        errorState = nil
+        transcriptionText = query
+        displayState = .uploading
+
+        Task { @MainActor in
+            do {
+                try await runAgentQuery(query, accessToken: accessToken, flowStart: flowStart)
+            } catch {
+                handleAgentError(error, context: "Agent processing")
+            }
+        }
+    }
+
+    /// Sends a query to the agent and applies its response to the schedule UI.
+    private func runAgentQuery(_ transcribedText: String, accessToken: String?, flowStart: Date) async throws {
+        let startingToken = try await resolveAccessToken(initial: accessToken)
+
+        // Clear any existing highlights, notices, or confirmations from previous agent action state
+        agentAction = nil
+        focusEvent = nil
+        noticeMessage = nil
+
+        // Send to agent
+        let agentStart = Date()
+        let (result, tokenUsed) = try await sendToAgent(
+            query: transcribedText,
+            accessToken: startingToken
+        )
+        let agentDuration = Date().timeIntervalSince(agentStart)
+        await timingLogger.logStep("frontend.send_to_agent", duration: agentDuration, details: "response_type=\(result.agentResponse.typeString)")
+
+        // Handle response and display UI
+        let handleStart = Date()
+        try await handle(agentResponse: result.agentResponse, accessToken: tokenUsed)
+        let handleDuration = Date().timeIntervalSince(handleStart)
+        await timingLogger.logStep("frontend.handle_response", duration: handleDuration)
+
+        // Clear transcription text when agent response arrives
+        transcriptionText = nil
+
+        displayState = .completed(result: result)
+
+        // Log total flow duration
+        let totalDuration = Date().timeIntervalSince(flowStart)
+        await timingLogger.logStep("frontend.total_flow", duration: totalDuration)
+
+        // Set notice message for no-action responses (after clearing transcription)
+        switch result.agentResponse {
+        case .noAction(let response):
+            setNoticeMessage(response.metadata.reason)
+        case .error(let error):
+            // Handle agent error - this is an agent mistake, not a user error
+            // Log full error details for debugging (verbose internal logging)
+            print("Agent error handled: \(error.message)")
+            // AgentErrorResponse conforms to Error, so we can pass it directly
+            // This will show brief, user-friendly message to user
+            handleAgentError(error as Error, context: "Agent processing")
+        default:
+            // Clear notice message for successful actions
+            clearNoticeMessage()
+        }
+
+        if let responseString = result.responseString {
+            let formattedResponse = formatAgentResponse(
+                statusCode: result.statusCode,
+                jsonString: responseString
+            )
+            print(formattedResponse)
         }
     }
 

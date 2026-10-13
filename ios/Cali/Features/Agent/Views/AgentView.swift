@@ -11,6 +11,8 @@ import UIKit
 struct AgentView: View {
     @StateObject private var viewModel = AgentViewModel()
     @State private var isPressingMic = false
+    @State private var isTypingPrompt = false
+    @State private var typedPrompt = ""
     @State private var selectedEventForDetails: CalendarEvent?
     @State private var isLoadingEventDetails = false
     @Binding var scrollToNowTrigger: Int
@@ -78,12 +80,26 @@ struct AgentView: View {
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
                 
+                if isTypingPrompt {
+                    TypedPromptBubble(
+                        text: $typedPrompt,
+                        isSending: isLoading,
+                        onSend: sendTypedPrompt
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+
                 // Microphone button in liquid glass container - always in fixed position at bottom
                 MicrophoneButtonContainer {
                     microphoneButton
                 }
+                .overlay(alignment: .trailing) {
+                    typePromptButton
+                        .padding(.trailing, 20)
+                }
             }
         }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isTypingPrompt)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: agentModalState != nil)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selectedEventForDetails != nil)
         .onReceive(viewModel.$displayState) { state in
@@ -172,8 +188,38 @@ struct AgentView: View {
         
         // Additional padding when modal visible
         let modalPadding: CGFloat = agentModalState != nil ? 88 + 8 + 24 : 0 // modal height + gap + buffer
-        
-        return microphonePadding + modalPadding
+
+        // Additional padding when the typed prompt bubble is open
+        let promptPadding: CGFloat = isTypingPrompt ? 52 + 8 : 0 // bubble height + gap
+
+        return microphonePadding + modalPadding + promptPadding
+    }
+
+    /// Small button beside the mic that opens a text bubble for typing a prompt.
+    private var typePromptButton: some View {
+        Button {
+            isTypingPrompt.toggle()
+            if !isTypingPrompt {
+                typedPrompt = ""
+            }
+        } label: {
+            Image(systemName: isTypingPrompt ? "xmark" : "keyboard")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(ColorPalette.Text.primary)
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .circle)
+        .shadow(color: Color.black.opacity(0.1), radius: 8, x: 0, y: 3)
+        .disabled(viewModel.isRecording)
+        .accessibilityLabel(isTypingPrompt ? "Close text prompt" : "Type a prompt")
+    }
+
+    private func sendTypedPrompt() {
+        viewModel.sendTypedPrompt(typedPrompt, accessToken: authViewModel.session?.accessToken)
+        typedPrompt = ""
+        isTypingPrompt = false
     }
     
     private var microphoneButton: some View {
