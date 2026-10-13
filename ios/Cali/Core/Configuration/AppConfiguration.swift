@@ -31,13 +31,13 @@ enum AppConfiguration {
         return nil
     }
 
-    /// Full OAuth callback URL (e.g. cali://oauth/google).
+    /// Full OAuth callback URL (e.g. cali://oauth/google). Must have a compiled
+    /// default: custom INFOPLIST_KEY_* build settings never reach the generated
+    /// Info.plist, and scheme env vars vanish once the app is relaunched outside Xcode.
     static var googleOAuthCallbackURL: URL {
-        guard let string = infoValue(for: "GoogleOAuthCallbackURL") ?? environmentValue(for: "GOOGLE_OAUTH_CALLBACK_URL"),
-              let url = URL(string: string) else {
-            fatalError("GoogleOAuthCallbackURL must be set in Info.plist or GOOGLE_OAUTH_CALLBACK_URL environment variable")
-        }
-        return url
+        let string = stringValue(infoKey: "GoogleOAuthCallbackURL", envKey: "GOOGLE_OAUTH_CALLBACK_URL")
+            ?? "cali://oauth/google"
+        return URL(string: string) ?? URL(string: "cali://oauth/google")!
     }
 
     /// Callback URL scheme used by ASWebAuthenticationSession.
@@ -45,14 +45,23 @@ enum AppConfiguration {
         googleOAuthCallbackURL.scheme ?? "cali"
     }
 
-    /// API origin. Scheme env vars only exist when Xcode launches the app;
-    /// after a swipe-kill the process starts clean, so the compiled default must
-    /// be the hosted API, not localhost.
+    /// Local backend the simulator talks to (`docker compose up backend` or uvicorn on :8000).
+    private static let simulatorBackendURL = "http://localhost:8000"
+
+    /// API origin. Simulator builds default to the local backend; device and
+    /// TestFlight builds use the hosted API. Scheme env vars (BACKEND_URL /
+    /// AGENT_BASE_URL) still win when enabled, but they only exist when Xcode
+    /// launches the app, so the compiled defaults must stand on their own.
     static var backendURL: URL {
-        let candidates = [
+        var candidates = [
             environmentValue(for: "BACKEND_URL"),
-            infoValue(for: "BackendURL"),
             environmentValue(for: "AGENT_BASE_URL"),
+        ]
+        #if targetEnvironment(simulator)
+        candidates.append(simulatorBackendURL)
+        #endif
+        candidates += [
+            infoValue(for: "BackendURL"),
             infoValue(for: "AgentBaseURL"),
         ]
         for candidate in candidates {

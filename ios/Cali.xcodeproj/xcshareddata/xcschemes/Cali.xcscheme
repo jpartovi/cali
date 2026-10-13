@@ -54,7 +54,7 @@
          <EnvironmentVariable
             key = "BACKEND_URL"
             value = "https://cali-api.onrender.com"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </EnvironmentVariable>
          <EnvironmentVariable
             key = "GOOGLE_OAUTH_CALLBACK_URL"
@@ -79,7 +79,7 @@
          <EnvironmentVariable
             key = "AGENT_BASE_URL"
             value = "https://cali-api.onrender.com"
-            isEnabled = "YES">
+            isEnabled = "NO">
          </EnvironmentVariable>
       </EnvironmentVariables>
    </LaunchAction>
