@@ -799,16 +799,15 @@ final class AgentViewModel: ObservableObject {
     }
 
     private func resolveAccessToken(initial: String?) async throws -> String {
-        // Use provided token if available, otherwise get from AuthTokenProvider
+        // AuthTokenProvider first: it refreshes the token before it expires. The token passed in
+        // comes from a stored session and can be stale, which cost a rejected request + retry.
+        if let token = await AuthTokenProvider.shared.currentAccessToken() {
+            return token
+        }
         if let token = initial, !token.isEmpty {
             return token
         }
-        
-        // Always use AuthTokenProvider - single source of truth, always fresh (auto-refreshed by Supabase)
-        guard let token = await AuthTokenProvider.shared.currentAccessToken() else {
-            throw AccessTokenError.missingAuthProvider
-        }
-        return token
+        throw AccessTokenError.missingAuthProvider
     }
 
     private func transcribeAudio(
@@ -910,6 +909,24 @@ final class AgentViewModel: ObservableObject {
         }
     }
 
+    /// The event the agent picked, taken from the live schedule when it's already loaded
+    /// (saves a ~0.5s backend round trip); fetched from the backend otherwise.
+    private func agentEvent(
+        accessToken: String,
+        calendarId: String,
+        eventId: String
+    ) async throws -> CalendarEvent {
+        let matches = displayEvents.filter { $0.id == eventId }
+        if let loaded = matches.first(where: { $0.event.calendarId == calendarId }) ?? matches.first {
+            return loaded.event
+        }
+        return try await fetchEventWithRefresh(
+            accessToken: accessToken,
+            calendarId: calendarId,
+            eventId: eventId
+        )
+    }
+
     // MARK: - Show Event Handling
     private func handleShowEvent(response: ShowEventResponse, accessToken: String) async throws {
         let eventID = response.metadata.event_id
@@ -920,7 +937,7 @@ final class AgentViewModel: ObservableObject {
         
         // Fetch the event to get its start date
         let fetchStart = Date()
-        let event = try await fetchEventWithRefresh(
+        let event = try await agentEvent(
             accessToken: accessToken,
             calendarId: calendarID,
             eventId: eventID
@@ -972,7 +989,7 @@ final class AgentViewModel: ObservableObject {
         let focus = ScheduleFocusEvent(eventID: eventID, style: .destructive)
         
         // Fetch the event to get its start date
-        let event = try await fetchEventWithRefresh(
+        let event = try await agentEvent(
             accessToken: accessToken,
             calendarId: calendarID,
             eventId: eventID
@@ -1014,7 +1031,7 @@ final class AgentViewModel: ObservableObject {
         let calendarID = metadata.calendar_id
         
         // Fetch the original event to get its current data
-        let originalEvent = try await fetchEventWithRefresh(
+        let originalEvent = try await agentEvent(
             accessToken: accessToken,
             calendarId: calendarID,
             eventId: eventID
