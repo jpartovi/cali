@@ -8,7 +8,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from core.config import get_settings
-from domains.calendar_listener.service import CalendarListenerService
+from domains.calendar_listener.service import CalendarListenerService, run_off_event_loop
 
 router = APIRouter(prefix="/calendar-listener", tags=["calendar-listener"])
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ async def tick_calendar_listener(
 ) -> Dict[str, Any]:
     """Renew watches, incremental-sync stale calendars, and run due jobs."""
     try:
-        stats = await CalendarListenerService().tick()
+        stats = await run_off_event_loop(lambda: CalendarListenerService().tick())
     except Exception:
         logger.exception("Calendar listener tick failed")
         raise HTTPException(

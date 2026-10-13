@@ -6,7 +6,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Header, Response, status
 
-from domains.calendar_listener.service import CalendarListenerService
+from domains.calendar_listener.service import CalendarListenerService, run_off_event_loop
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 logger = logging.getLogger(__name__)
@@ -40,11 +40,11 @@ async def _process_google_webhook(
     resource_id: str | None,
 ) -> None:
     try:
-        await CalendarListenerService().handle_google_webhook(
+        await run_off_event_loop(lambda: CalendarListenerService().handle_google_webhook(
             channel_id=channel_id,
             channel_token=channel_token,
             resource_state=resource_state,
             resource_id=resource_id,
-        )
+        ))
     except Exception:
         logger.exception("Google calendar webhook processing failed channel=%s", channel_id)

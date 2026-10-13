@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 from urllib.parse import urlparse
 
 from core.config import get_settings
@@ -31,6 +32,19 @@ from domains.calendars.service import CalendarService
 from utils.errors import GoogleCalendarAuthError
 
 logger = logging.getLogger(__name__)
+
+
+T = TypeVar("T")
+
+
+async def run_off_event_loop(make_work: Callable[[], Awaitable[T]]) -> T:
+    """Run listener work on its own event loop in a worker thread.
+
+    The listener's database calls are synchronous, so run on the server's event loop a
+    20-50s tick (or a webhook sync) froze every other request until it finished. Each
+    call creates its own HTTP clients, so a separate loop is safe.
+    """
+    return await asyncio.to_thread(lambda: asyncio.run(make_work()))
 
 SUPPRESSION_WINDOW = timedelta(minutes=2)
 SYNC_LOCK_STALE = timedelta(minutes=2)
