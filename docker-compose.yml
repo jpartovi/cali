@@ -2,8 +2,8 @@
 #
 #   docker compose up --build backend
 #
-# If LangGraph is running on the host (`langgraph dev`, port 2024), set:
-#   LANGGRAPH_AGENT_URL=http://host.docker.internal:2024
+# The agent runs on the host (`BACKEND_URL=http://localhost:8000 langgraph dev`, port 2024);
+# localhost inside the container is the container itself, so reach it via host.docker.internal.
 services:
   backend:
     build:
@@ -16,6 +16,7 @@ services:
     environment:
       PORT: "8000"
       BACKEND_URL: http://localhost:8000
+      LANGGRAPH_AGENT_URL: http://host.docker.internal:2024
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
