@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # Create pre-pass: for new events without an exact time, have Jev read the days, length and
     # buffer, then rank the free slots (services/time_finder.py). Needs agent_request_classifier.
     agent_prepass_time: bool = False
+    # People pre-pass: for any request, match names against contacts and calendar attendees, then
+    # have Jev say which people the request means (services/people_finder.py). Runs without the classifier.
+    agent_prepass_people: bool = False
 
     # Performance debugging
     enable_timing_logger: bool = False  # Enable detailed timing logs (default: off for production)

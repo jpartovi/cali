@@ -57,6 +57,7 @@ class ContactResponse(BaseModel):
     nickname: Optional[str] = None
     display_name: str
     invite_email: Optional[str] = None
+    emails: list[str] = Field(default_factory=list)
     last_imported_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime

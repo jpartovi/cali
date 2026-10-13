@@ -26,14 +26,27 @@ def compute_display_name(
     return "Unknown"
 
 
-def resolve_invite_email(emails: Sequence[str], existing: str | None) -> str | None:
+def resolve_invite_email(
+    emails: Sequence[str],
+    existing: str | None,
+    event_counts: Dict[str, int] | None = None,
+) -> str | None:
+    """The email to invite this contact at.
+
+    Keeps the current choice while it's still on the card; otherwise the address the user
+    has been on the most calendar events with; otherwise the card's first email.
+    """
     unique = list(emails)
+    if not unique:
+        return None
     if len(unique) == 1:
         return unique[0]
     existing_normalized = (existing or "").strip().lower() or None
     if existing_normalized and existing_normalized in unique:
         return existing_normalized
-    return None
+    counts = event_counts or {}
+    # max() keeps the first of equal counts, so with no history this is the card's first email
+    return max(unique, key=lambda email: counts.get(email, 0))
 
 
 _UPDATE_KEYS = (
@@ -42,6 +55,7 @@ _UPDATE_KEYS = (
     "nickname",
     "display_name",
     "invite_email",
+    "emails",
     "apple_identifier",
 )
 
@@ -72,6 +86,11 @@ class ContactsService:
             for row in self.repository.get_by_apple_identifiers(user_id, apple_ids)
             if row.get("apple_identifier")
         }
+        # Calendar history only matters for cards with several emails and no remembered choice
+        event_counts = self.repository.event_counts_by_email(
+            user_id,
+            [email for item in contacts if len(item.emails) > 1 for email in item.emails],
+        )
         now = self.repository.utc_now_iso()
         new_payloads: List[Dict[str, Any]] = []
         upsert_rows: List[Dict[str, Any]] = []
@@ -82,6 +101,7 @@ class ContactsService:
             invite_email = resolve_invite_email(
                 item.emails,
                 existing.get("invite_email") if existing else None,
+                event_counts,
             )
             payload = {
                 "user_id": user_id,
@@ -91,6 +111,7 @@ class ContactsService:
                 "nickname": item.nickname,
                 "display_name": display_name,
                 "invite_email": invite_email,
+                "emails": item.emails,
                 "last_imported_at": now,
             }
             if existing is None:
@@ -136,6 +157,7 @@ class ContactsService:
             nickname=row.get("nickname"),
             display_name=row["display_name"],
             invite_email=row.get("invite_email"),
+            emails=row.get("emails") or [],
             last_imported_at=row.get("last_imported_at"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

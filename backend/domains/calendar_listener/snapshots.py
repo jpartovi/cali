@@ -74,8 +74,11 @@ def _attendee_rows(event: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optiona
                 continue
             is_self = bool(attendee.get("self"))
             response = attendee.get("responseStatus")
+            display_name = attendee.get("displayName")
             row = {
                 "email": email,
+                # Lets the people pre-pass match "Henry" to this attendee (supabase people_candidates)
+                "displayName": display_name if isinstance(display_name, str) and display_name else None,
                 "responseStatus": response if isinstance(response, str) else None,
                 "self": is_self,
             }

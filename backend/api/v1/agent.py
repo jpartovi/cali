@@ -167,6 +167,34 @@ async def _find_prepass_time(user_id: str, query_text: str, request_kind: Option
     return result if result["status"] in ("slots", "none") else None
 
 
+PREPASS_PEOPLE_TIMEOUT_SECONDS = 4.0
+
+
+async def _find_prepass_people(user_id: str, query_text: str, user_timezone: str) -> Optional[dict]:
+    """People pre-pass: who the request is talking about (any request kind), else None."""
+    if not get_settings().agent_prepass_people:
+        return None
+    from services.people_finder import find_people_for_user, people_summary
+
+    start = time.time()
+    try:
+        result = await asyncio.wait_for(
+            find_people_for_user(user_id, query_text, user_timezone),
+            timeout=PREPASS_PEOPLE_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"Pre-pass people lookup skipped: {type(e).__name__}: {e}")
+        log_step("backend.api.action.prepass_people", time.time() - start, details=f"skipped={type(e).__name__}")
+        return None
+    log_step(
+        "backend.api.action.prepass_people",
+        time.time() - start,
+        details=f"status={result['status']} candidates={result['candidate_count']} db_ms={result['db_ms']} jev_ms={result['jev_ms']}",
+    )
+    logger.info(f"Pre-pass people: status={result['status']} seconds={time.time() - start:.2f} {people_summary(result)}")
+    return result if result["status"] == "found" else None
+
+
 def _writable_calendars(user_id: str) -> list:
     """Calendars the user can write to, in the agent's list_calendars format.
 
@@ -332,11 +360,14 @@ async def agent_action(
         current_time_str = current_user_time.isoformat()
         current_day_of_week = current_user_time.strftime("%A")  # Full day name
 
-        # The calendar list (a database read) runs while Jev classifies the request
+        # The calendar list (a database read) runs while Jev classifies the request; the people
+        # pre-pass doesn't need the kind, so it runs alongside both stages
         calendars_task = asyncio.create_task(asyncio.to_thread(_writable_calendars, current_user.id))
+        people_task = asyncio.create_task(_find_prepass_people(current_user.id, query_text, user_timezone))
         request_kind = await _classify_request_kind(query_text)
         prepass_event = await _find_prepass_event(current_user.id, query_text, request_kind, user_timezone)
         prepass_time = await _find_prepass_time(current_user.id, query_text, request_kind, user_timezone)
+        prepass_people = await people_task  # Never raises: failures come back as None
         try:
             auth["writable_calendars"] = await calendars_task
         except Exception as e:
@@ -348,6 +379,7 @@ async def agent_action(
             "request_kind": request_kind,
             "prepass_event": prepass_event,
             "prepass_time": prepass_time,
+            "prepass_people": prepass_people,
             "success": False,
             "type": None,
             "metadata": {},

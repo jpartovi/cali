@@ -28,6 +28,8 @@ services:
       AGENT_PREPASS_EVENT: ${AGENT_PREPASS_EVENT:-false}
       # Create pre-pass (needs the classifier): suggested free times for new events. AGENT_PREPASS_TIME=true
       AGENT_PREPASS_TIME: ${AGENT_PREPASS_TIME:-false}
+      # People pre-pass (no classifier needed): who the request is talking about. AGENT_PREPASS_PEOPLE=true
+      AGENT_PREPASS_PEOPLE: ${AGENT_PREPASS_PEOPLE:-false}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

@@ -435,6 +435,34 @@ def _build_suggested_times_section(prepass: Optional[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _build_people_section(prepass: Optional[Dict[str, Any]]) -> str:
+    """Who the request is talking about, from the people pre-pass (sent after the time context)"""
+    if not prepass:
+        return ""
+
+    def line(person: Dict[str, Any]) -> str:
+        name, email = person.get("display_name"), person.get("email")
+        who = f"{name} <{email}>" if email and email != name else name
+        if not email:
+            who += " - no email on file"
+        return f"  - {who}: {person.get('details')} (probability {person.get('probability')})"
+
+    lines = ["PEOPLE IN THIS REQUEST (automatic; matched from the user's contacts and calendar - may be wrong)"]
+    people = prepass.get("people") or []
+    if people:
+        lines.append("The request is talking about:")
+        lines += [line(p) for p in people]
+    for group in prepass.get("ambiguous") or []:
+        lines.append("Unclear which of these the request means - go with the most likely one:")
+        lines += [line(p) for p in group]
+    maybe = prepass.get("maybe") or []
+    if maybe:
+        lines.append("Possibly also (low confidence):")
+        lines += [line(p) for p in maybe]
+    lines.append("Use these names and emails wherever the request involves these people.")
+    return "\n".join(lines)
+
+
 def _prefetched_calendar_messages(calendars: Optional[List[Dict[str, Any]]]) -> List[BaseMessage]:
     """The writable calendars the backend sent for a create request, as a list_calendars() call already made.
 
@@ -608,6 +636,7 @@ class State(TypedDict):
     request_kind: Optional[str]  # Pre-pass request kind when Jev was sure (e.g. "delete_event"); None otherwise
     prepass_event: Optional[dict]  # Pre-pass likely events for find/update/delete (status, top, searched_from/to); None otherwise
     prepass_time: Optional[dict]  # Create pre-pass suggested slots (status, top, duration/buffer_minutes, days); None otherwise
+    prepass_people: Optional[dict]  # People pre-pass: who the request talks about (people, ambiguous, maybe); None otherwise
 
 
 class OutputState(TypedDict):
@@ -670,7 +699,10 @@ def agent_node(state: State) -> Dict[str, Any]:
         times_section = _build_suggested_times_section(state.get("prepass_time"))
         if times_section:
             system_messages.append(SystemMessage(content=times_section))
-    
+    people_section = _build_people_section(state.get("prepass_people"))
+    if people_section:
+        system_messages.append(SystemMessage(content=people_section))
+
     # Initialize messages if empty
     if not messages:
         messages = system_messages + [HumanMessage(content=query)]

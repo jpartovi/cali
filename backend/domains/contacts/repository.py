@@ -139,6 +139,46 @@ class ContactsRepository:
             raise SupabaseStorageError(exc.message) from exc
         return deleted
 
+    def event_counts_by_email(self, user_id: str, emails: Sequence[str]) -> Dict[str, int]:
+        """How many of the user's calendar events each email was on (calendar_event_people)."""
+        if not emails:
+            return {}
+        client = get_service_client()
+        counts: Dict[str, int] = {}
+        try:
+            for chunk in _chunks(list(dict.fromkeys(emails))):
+                offset = 0
+                while True:
+                    result = (
+                        client.table("calendar_event_people")
+                        .select("email")
+                        .eq("user_id", user_id)
+                        .in_("email", list(chunk))
+                        .range(offset, offset + 999)
+                        .execute()
+                    )
+                    rows = result.data or []
+                    for row in rows:
+                        counts[row["email"]] = counts.get(row["email"], 0) + 1
+                    if len(rows) < 1000:
+                        break
+                    offset += 1000
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return counts
+
+    def people_candidates(self, user_id: str, text: str, limit: int = 15) -> List[Dict[str, Any]]:
+        """Contacts and calendar attendees whose names appear in `text` (supabase people_candidates)."""
+        client = get_service_client()
+        try:
+            result = client.rpc(
+                "people_candidates",
+                {"p_user_id": user_id, "p_text": text, "p_limit": limit},
+            ).execute()
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return result.data or []
+
     @staticmethod
     def utc_now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
