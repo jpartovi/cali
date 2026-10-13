@@ -136,11 +136,11 @@ struct ScheduleEventCard: View {
     }
 
     private var shadowAttributes: (color: Color, radius: CGFloat, x: CGFloat, y: CGFloat) {
-        // Always use shadow with the appropriate color (calendar color or default black)
-        // Standard and past style cards use more subtle shadow
-        let radius: CGFloat = (style == .standard || style == .past) ? 8 : 14
-        let y: CGFloat = (style == .standard || style == .past) ? 5 : 10
-        return (shadowColor, radius, 0, y)
+        // Base-appearance cards (standard and past) have no shadow
+        if style == .standard || style == .past {
+            return (.clear, 0, 0, 0)
+        }
+        return (shadowColor, 14, 0, 10)
     }
 }
 

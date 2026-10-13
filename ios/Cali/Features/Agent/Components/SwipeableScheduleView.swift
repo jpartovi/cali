@@ -135,9 +135,10 @@ private struct AllDayEventCard: View {
     }
     
     private var shadowAttributes: (color: Color, radius: CGFloat, x: CGFloat, y: CGFloat) {
-        let radius: CGFloat = (style == .standard || style == .past) ? 8 : 14
-        let y: CGFloat = (style == .standard || style == .past) ? 5 : 10
-        return (shadowColor, radius, 0, y)
+        if style == .standard || style == .past {
+            return (.clear, 0, 0, 0)
+        }
+        return (shadowColor, 14, 0, 10)
     }
     
     @ViewBuilder
