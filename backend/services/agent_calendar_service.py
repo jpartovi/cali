@@ -2,23 +2,39 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any, Dict, Optional
+import time as time_module
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
+from core.timing_logger import log_step, log_start
 from domains.calendars.repository import CalendarRepository
 from domains.calendars.providers.google import (
     GoogleCalendarAPIError,
     GoogleCalendarCredentials,
     GoogleCalendarWrapper,
 )
+from domains.calendars.service import CalendarService
+from utils.errors import GoogleCalendarAuthError
 
 logger = logging.getLogger(__name__)
 
+# Cap on concurrent per-calendar Google requests during a search, so a user with
+# many calendars doesn't open dozens of connections at once.
+SEARCH_CONCURRENCY_LIMIT = 8
 
-def get_calendar_wrapper_for_user(user_id: str) -> GoogleCalendarWrapper:
-    """Get a GoogleCalendarWrapper instance for the user's first Google account."""
-    repository = CalendarRepository()
+
+async def _get_search_credentials(
+    user_id: str,
+    repository: CalendarRepository,
+) -> tuple[Dict[str, Any], GoogleCalendarCredentials]:
+    """Return the user's first Google account and credentials with a valid access token.
+
+    Refreshes (and saves) the token up front through CalendarService, the same path the
+    schedule uses, so the parallel per-calendar searches never each hit a 401 and
+    refresh on their own.
+    """
     accounts = repository.get_accounts(user_id)
     if not accounts:
         raise HTTPException(
@@ -27,20 +43,22 @@ def get_calendar_wrapper_for_user(user_id: str) -> GoogleCalendarWrapper:
         )
     
     account = accounts[0]
-    access_token = account.get("access_token")
-    refresh_token = account.get("refresh_token")
-    
-    if not access_token or not refresh_token:
+    if not account.get("access_token") or not account.get("refresh_token"):
         raise HTTPException(
             status_code=401,
             detail="Google account missing access or refresh token."
         )
     
+    try:
+        access_token = await CalendarService(repository)._ensure_access_token(account)
+    except GoogleCalendarAuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    
     credentials = GoogleCalendarCredentials(
         access_token=access_token,
-        refresh_token=refresh_token,
+        refresh_token=account.get("refresh_token"),
     )
-    return GoogleCalendarWrapper(credentials)
+    return account, credentials
 
 
 async def search_events_for_user(
@@ -68,10 +86,10 @@ async def search_events_for_user(
     Returns:
         Dictionary containing search results with events list from all calendars
     """
-    wrapper = get_calendar_wrapper_for_user(user_id)
+    repository = CalendarRepository()
+    account, search_credentials = await _get_search_credentials(user_id, repository)
     
     # Get user's calendars from Supabase (with hidden calendars filtered out)
-    repository = CalendarRepository()
     user_calendars = repository.get_calendars(user_id)  # Default include_hidden=False filters hidden calendars
     visible_calendar_ids = {cal["google_calendar_id"] for cal in user_calendars}
     
@@ -87,12 +105,14 @@ async def search_events_for_user(
                 }
             calendars_to_search = [{"id": calendar_id}]
         else:
-            # Get all calendars from Google API, but filter to only visible ones
-            all_calendars = await wrapper.list_calendars(min_access_role="reader")
-            # Filter to only calendars that are visible (not hidden) in Supabase
+            # Use the visible calendars Supabase already has instead of listing them
+            # from Google first. Only this account's calendars can be searched with
+            # its token, and free/busy-only calendars have no searchable details.
             calendars_to_search = [
-                cal for cal in all_calendars
-                if cal.get("id") in visible_calendar_ids
+                {"id": cal["google_calendar_id"], "summary": cal.get("name")}
+                for cal in user_calendars
+                if cal.get("google_account_id") == account.get("id")
+                and cal.get("access_role") != "freeBusyReader"
             ]
         
         # Search across all calendars
@@ -103,53 +123,83 @@ async def search_events_for_user(
         # But ensure we don't exceed the total max_results
         per_calendar_max = max(10, max_results // max(1, len(calendars_to_search)))
         
-        for calendar in calendars_to_search:
-            cal_id = calendar.get("id")
-            if not cal_id:
-                continue
-                
-            try:
-                result = await wrapper.search_events(
+        semaphore = asyncio.Semaphore(SEARCH_CONCURRENCY_LIMIT)
+        
+        async def search_single_calendar(cal_id: str) -> Dict[str, Any]:
+            """Search a single calendar.
+            
+            Creates a fresh wrapper for thread-safety: googleapiclient service
+            objects are not thread-safe when used concurrently via asyncio.to_thread().
+            """
+            async with semaphore:
+                fresh_wrapper = GoogleCalendarWrapper(
+                    GoogleCalendarCredentials(
+                        access_token=search_credentials.access_token,
+                        refresh_token=search_credentials.refresh_token,
+                        credentials_json_path=search_credentials.credentials_json_path,
+                    )
+                )
+                return await fresh_wrapper.search_events(
                     query=query,
                     calendar_id=cal_id,
                     time_min=time_min,
                     time_max=time_max,
                     max_results=per_calendar_max,
                 )
-                
-                # Format the response to include event details
-                events = result.get("items", [])
-                calendar_name = calendar.get("summary", cal_id)
-                
-                for event in events:
-                    all_formatted_events.append({
-                        "event_id": event.get("id"),
-                        "calendar_id": cal_id,
-                        "calendar_name": calendar_name,
-                        "summary": event.get("summary", "No title"),
-                        "description": event.get("description", ""),
-                        "location": event.get("location", ""),
-                        "start": event.get("start", {}).get("dateTime") or event.get("start", {}).get("date"),
-                        "end": event.get("end", {}).get("dateTime") or event.get("end", {}).get("date"),
-                        "attendees": [
-                            {
-                                "email": att.get("email"),
-                                "displayName": att.get("displayName"),
-                            }
-                            for att in event.get("attendees", [])
-                        ],
-                        "organizer": {
-                            "email": event.get("organizer", {}).get("email"),
-                            "displayName": event.get("organizer", {}).get("displayName"),
-                        } if event.get("organizer") else None,
-                    })
-                    
-            except GoogleCalendarAPIError as e:
-                # Log error but continue searching other calendars
-                error_msg = f"Error searching calendar {cal_id}: {str(e)}"
-                logger.warning(f"Calendar search error user_id={user_id} calendar={cal_id}: {str(e)}")
+        
+        calendar_queries: List[tuple[Dict[str, Any], str]] = [
+            (calendar, calendar.get("id"))
+            for calendar in calendars_to_search
+            if calendar.get("id")
+        ]
+        
+        # Execute all calendar searches in parallel (gather preserves input order)
+        parallel_start = time_module.time()
+        log_start("backend.agent_calendar_service.search_events_for_user.parallel_searches", details=f"calendar_count={len(calendar_queries)}")
+        results = await asyncio.gather(
+            *[search_single_calendar(cal_id) for _, cal_id in calendar_queries],
+            return_exceptions=True,
+        )
+        parallel_duration = time_module.time() - parallel_start
+        log_step("backend.agent_calendar_service.search_events_for_user.parallel_searches", parallel_duration, details=f"calendar_count={len(calendar_queries)}")
+        
+        for (calendar, cal_id), result in zip(calendar_queries, results):
+            if isinstance(result, GoogleCalendarAPIError):
+                # Log error but continue with other calendars
+                error_msg = f"Error searching calendar {cal_id}: {str(result)}"
+                logger.warning(f"Calendar search error user_id={user_id} calendar={cal_id}: {str(result)}")
                 errors.append(error_msg)
                 continue
+            if isinstance(result, BaseException):
+                # Any other failure fails the whole search, as the sequential loop did
+                raise result
+            
+            # Format the response to include event details
+            events = result.get("items", [])
+            calendar_name = calendar.get("summary", cal_id)
+            
+            for event in events:
+                all_formatted_events.append({
+                    "event_id": event.get("id"),
+                    "calendar_id": cal_id,
+                    "calendar_name": calendar_name,
+                    "summary": event.get("summary", "No title"),
+                    "description": event.get("description", ""),
+                    "location": event.get("location", ""),
+                    "start": event.get("start", {}).get("dateTime") or event.get("start", {}).get("date"),
+                    "end": event.get("end", {}).get("dateTime") or event.get("end", {}).get("date"),
+                    "attendees": [
+                        {
+                            "email": att.get("email"),
+                            "displayName": att.get("displayName"),
+                        }
+                        for att in event.get("attendees", [])
+                    ],
+                    "organizer": {
+                        "email": event.get("organizer", {}).get("email"),
+                        "displayName": event.get("organizer", {}).get("displayName"),
+                    } if event.get("organizer") else None,
+                })
         
         # Sort events by start time (earliest first)
         all_formatted_events.sort(
