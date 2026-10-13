@@ -204,6 +204,8 @@ async def agent_action(
             thread_id=None,
             assistant_id="agent",
             input=input_state,
+            # Normal flows finish in ~15 graph steps; fail fast instead of looping on a repeated tool error.
+            config={"recursion_limit": 30},
         )
         langgraph_duration = time.time() - langgraph_start
         log_step("backend.api.action.langgraph_invoke", langgraph_duration, details=f"response_type={result.get('type')}")

@@ -37,8 +37,7 @@ if not openai_api_key:
     logger.warning("OPENAI_API_KEY not found in environment variables - LLM calls may fail")
 
 llm = ChatOpenAI(
-    model="gpt-4o-mini",
-    temperature=0.7,
+    model="gpt-6-luna",  # GPT-6 models reject `temperature`
     model_kwargs={"tool_choice": "required"},  # Force tool usage at model level
 )
 

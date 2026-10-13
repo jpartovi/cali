@@ -26,6 +26,23 @@ from agent.schemas.agent_response import (
 
 logger = logging.getLogger(__name__)
 
+
+_PLACEHOLDER_WORDS = {"none", "null", "nil", "n/a", "na", "$none", "undefined"}
+
+
+def _optional(value: Optional[str]) -> Optional[str]:
+    """Treat placeholder strings as omitted.
+
+    Newer models fill unused optional tool args with "", ".", "$none" and similar
+    instead of leaving them out; those must not count as provided values.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not any(ch.isalnum() for ch in text) or text.lower() in _PLACEHOLDER_WORDS:
+        return None
+    return text
+
 # Context variable to store auth for tools (set during tool execution)
 import contextvars
 _auth_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar('auth', default=None)
@@ -339,6 +356,9 @@ def request_create_event(
     Returns:
         Dict with type "create-event" and metadata
     """
+    start_time, end_time = _optional(start_time), _optional(end_time)
+    start_date, end_date = _optional(start_date), _optional(end_date)
+    description, location = _optional(description), _optional(location)
     # Validate that either datetime or date is provided (not both, not neither)
     has_datetime = start_time is not None and end_time is not None
     has_date = start_date is not None and end_date is not None
@@ -418,6 +438,10 @@ def request_update_event(
     Returns:
         Dict with type "update-event" and metadata
     """
+    summary = _optional(summary)
+    start_time, end_time = _optional(start_time), _optional(end_time)
+    start_date, end_date = _optional(start_date), _optional(end_date)
+    description, location = _optional(description), _optional(location)
     # Validate that datetime and date are not mixed
     has_datetime = start_time is not None or end_time is not None
     has_date = start_date is not None or end_date is not None
