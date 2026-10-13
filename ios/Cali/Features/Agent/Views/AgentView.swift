@@ -159,7 +159,6 @@ struct AgentView: View {
            viewModel.transcriptionText == nil {
             return .confirmation(
                 actionType: actionType(for: agentAction),
-                guestSummary: guestSummary(for: agentAction),
                 onConfirm: {
                     Task {
                         await viewModel.confirmPendingAction(accessToken: authViewModel.session?.accessToken)
@@ -274,27 +273,6 @@ struct AgentView: View {
             },
             perform: {}
         )
-    }
-
-    /// Who confirming will email, e.g. "Invites Marcus Lee · Removes Henry"; nil when nobody.
-    private func guestSummary(for agentAction: AgentViewModel.AgentAction) -> String? {
-        func names(_ guests: [EventAttendeeMetadata]?) -> String? {
-            let names = (guests ?? []).map { $0.display_name ?? $0.email }
-            return names.isEmpty ? nil : ListFormatter.localizedString(byJoining: names)
-        }
-        let parts: [String]
-        switch agentAction {
-        case .createEvent(let response):
-            parts = [names(response.metadata.attendees).map { "Invites \($0)" }].compactMap { $0 }
-        case .updateEvent(let response):
-            parts = [
-                names(response.metadata.add_attendees).map { "Invites \($0)" },
-                names(response.metadata.remove_attendees).map { "Removes \($0)" },
-            ].compactMap { $0 }
-        case .deleteEvent, .showEvent, .showSchedule:
-            parts = []
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     private func actionType(for agentAction: AgentViewModel.AgentAction) -> ConfirmationActionType {

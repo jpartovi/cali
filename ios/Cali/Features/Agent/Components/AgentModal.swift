@@ -10,7 +10,6 @@ import SwiftUI
 enum AgentModalState {
     case confirmation(
         actionType: ConfirmationActionType,
-        guestSummary: String? = nil, // e.g. "Invites Marcus Lee" - confirming emails these people
         onConfirm: () -> Void,
         onCancel: () -> Void,
         isLoading: Bool
@@ -70,18 +69,8 @@ struct AgentModal: View {
     @ViewBuilder
     private func content(for state: AgentModalState) -> some View {
         switch state {
-        case .confirmation(_, let guestSummary, let onConfirm, let onCancel, let isLoading):
+        case .confirmation(_, let onConfirm, let onCancel, let isLoading):
             HStack(spacing: buttonSpacing) {
-                if let guestSummary {
-                    Label(guestSummary, systemImage: "envelope")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(ColorPalette.Text.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.85)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, verticalPadding)
-                }
-
                 // Cancel button (left) - circular destructive muted outline with transparent interior
                 Button {
                     onCancel()
@@ -119,7 +108,6 @@ struct AgentModal: View {
                     }
                 }
                 .disabled(isLoading)
-                .padding(.trailing, guestSummary == nil ? 0 : 12)
             }
             .frame(maxWidth: .infinity)
             
@@ -190,7 +178,6 @@ struct AgentModal: View {
             AgentModal(
                 state: AgentModalState.confirmation(
                     actionType: .createEvent,
-                    guestSummary: "Invites Marcus Lee",
                     onConfirm: {},
                     onCancel: {},
                     isLoading: false
