@@ -356,7 +356,7 @@ struct SwipeableScheduleView: View {
             let dayColumnWidth = viewportWidth / CGFloat(numberOfDays)
             let gridHeight = timelineTopInset + hourHeight * CGFloat(hours.count)
             let lineColor = ColorPalette.Surface.overlay.opacity(1)
-            let dateHeaderHeight: CGFloat = 18
+            let dateHeaderHeight: CGFloat = 22 // Fits the today pill (18pt label + vertical padding)
             let paddingHeight = calculateBottomPadding()
             
             // Calculate all-day section height based on visible rows
@@ -1101,10 +1101,20 @@ struct SwipeableScheduleView: View {
         LazyHStack(alignment: .top, spacing: 0) {
             ForEach(0..<totalDayCount, id: \.self) { dayIndex in
                 let date = dateForDayIndex(dayIndex)
+                let isTodayColumn = isToday(date)
                 Text(dateHeaderFormatter.string(from: date))
                     .font(.footnote.weight(.semibold))
-                    .foregroundStyle(ColorPalette.Text.secondary)
-                    .frame(width: dayColumnWidth, height: 18, alignment: .leading)
+                    .foregroundStyle(isTodayColumn ? ColorPalette.Text.inverted : ColorPalette.Text.secondary)
+                    // Today's label sits in a small orange pill
+                    .padding(.horizontal, isTodayColumn ? 6 : 0)
+                    .padding(.vertical, isTodayColumn ? 2 : 0)
+                    .background {
+                        if isTodayColumn {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(ColorPalette.Semantic.primary)
+                        }
+                    }
+                    .frame(width: dayColumnWidth, height: 22, alignment: .leading)
                     .transition(.identity)
             }
         }
