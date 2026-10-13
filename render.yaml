@@ -16,6 +16,10 @@ services:
         sync: false
       - key: SUPABASE_JWT_SECRET
         sync: false
+      # Pre-launch only: when set, phone login accepts this code for any number and sends
+      # no SMS. Remove it before real users sign in.
+      - key: AUTH_DEV_OTP_CODE
+        sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
