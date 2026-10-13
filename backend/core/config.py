@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     # Stage 2 pre-pass: for find/delete/update requests, have Jev pick the likely event up front
     # (needs agent_request_classifier, since it only runs for those kinds)
     agent_prepass_event: bool = False
+    # Create pre-pass: for new events without an exact time, have Jev read the days, length and
+    # buffer, then rank the free slots (services/time_finder.py). Needs agent_request_classifier.
+    agent_prepass_time: bool = False
 
     # Performance debugging
     enable_timing_logger: bool = False  # Enable detailed timing logs (default: off for production)

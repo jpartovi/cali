@@ -17,6 +17,7 @@ from typesafe_sdk import Choice, TypeSafeError
 
 from core.config import get_settings
 from core.timing_logger import log_step
+from services.agent_runner import relative_dates_sheet
 from services.jev import get_jev_client
 from domains.calendars.service import CalendarService
 
@@ -122,7 +123,7 @@ def snapshot_events_for_user(user_id: str, start_date: date, end_date: date, tim
     rows = (
         get_service_client()
         .table("calendar_event_snapshots")
-        .select("google_event_id,google_calendar_id,status,title,location,start_at,end_at,is_all_day,timezone")
+        .select("google_event_id,google_calendar_id,status,title,location,start_at,end_at,is_all_day,timezone,self_response")
         .eq("user_id", user_id)
         .neq("status", "cancelled")
         .gte("end_at", window_start.isoformat())
@@ -154,6 +155,7 @@ def snapshot_events_for_user(user_id: str, start_date: date, end_date: date, tim
             "location": row.get("location"),
             "start": start,
             "end": end,
+            "self_response": row.get("self_response"),
         })
     events.sort(key=lambda e: e["start"].get("dateTime") or e["start"].get("date"))
     return events
@@ -204,10 +206,13 @@ async def find_event_for_user(
     criteria: Dict[str, Any] = {key: _option_for(event, tz) for key, event in keyed.items()}
     criteria[NONE_KEY] = "None of these events is the one the request refers to"
 
+    now = datetime.now(tz)
     state = {
         "request": description,
-        "now": datetime.now(tz).strftime("%a %b %-d %Y, %-I:%M %p"),
+        "now": now.strftime("%a %b %-d %Y, %-I:%M %p"),
         "timezone": timezone_name,
+        # Same date rules as the agent, e.g. "next Wednesday" is next week's, not the coming one
+        "relative_dates": relative_dates_sheet(now, timezone_name),
     }
 
     jev_start = time.time()

@@ -92,6 +92,19 @@ class MockClient(CalendarClient):
             return {"status": "ambiguous", "event": None, "candidates": [{**e, "probability": share} for e in events[:3]]}
         return {"status": "none", "event": None, "candidates": []}
 
+    async def find_free_time(
+        self,
+        start_time: str,
+        end_time: str,
+        duration_minutes: int,
+        buffer_minutes: int = 0,
+        earliest_time: Optional[str] = None,
+        latest_time: Optional[str] = None,
+        auth: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Mock: the free-time search runs in the backend, so report nothing found."""
+        return {"blocks": [], "block_count": 0, "note": "Free time search isn't available with the mock calendar."}
+
     async def read_event(
         self,
         event_id: str,

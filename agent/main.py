@@ -11,6 +11,7 @@ _parent_dir = _current_file.parent.parent
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
+import json
 import logging
 import time
 from langgraph.graph import StateGraph, END, START
@@ -38,10 +39,14 @@ if not openai_api_key:
 
 llm = ChatOpenAI(
     model="gpt-6-luna",  # GPT-6 models reject `temperature`
-    # Default reasoning. "none" saved only ~0.3s per call live and made the model
-    # second-guess pre-analysis matches it couldn't read (an extra ~2s call)
+    # Full agent runs on 10 hard requests: ~1.1s faster per call (median 1.7s vs 2.8s) and far
+    # steadier than default reasoning, with the same answers in 19 of 20 runs
+    reasoning_effort="none",
     # Cache only where we mark it: after the static system prompt (see agent_node)
     prompt_cache_options={"mode": "explicit"},
+    # Calls take 1.5-5s; without this a stalled call waited the client's 10-minute default
+    timeout=30,
+    max_retries=2,
     model_kwargs={"tool_choice": "required"},  # Force tool usage at model level
 )
 
@@ -136,6 +141,7 @@ INTERNAL TOOLS (for gathering information - do NOT terminate):
 - search_events(keywords, start_time, end_time): Find events matching keywords
 - read_event(event_id, calendar_id): Get full details of a specific event
 - list_calendars(): List all available calendars
+- find_free_time(start_time, end_time, duration_minutes, buffer_minutes=0, earliest_time=None, latest_time=None): Free blocks where an event of that length fits, with buffer_minutes kept clear on each side. Each block lists earliest_start/latest_end and the events right before and after it. Only 5 AM to midnight of each day unless earliest_time/latest_time ("HH:MM") say otherwise
 
 EXTERNAL TOOLS (terminate agent and show results to user):
 - show_schedule(start_time, end_time): Display schedule to user
@@ -147,7 +153,7 @@ EXTERNAL TOOLS (terminate agent and show results to user):
 
 _CALENDAR_SELECTION_RULES = """CALENDAR SELECTION RULES (for write operations):
 For request_create_event, request_update_event, and request_delete_event:
-- You MUST call list_calendars() first and ONLY use calendar_id values from its results. list_calendars() returns only calendars with write access (access_role: "writer" or "owner").
+- ONLY use calendar_id values from list_calendars() results, which are the calendars with write access (access_role: "writer" or "owner"). If list_calendars() has already been called in this conversation, use that result and don't call it again; otherwise call it first.
 - NEVER use calendar_id values from event read results (read_schedule, search_events, read_event) - these may be read-only calendars.
 - Prefer the primary calendar (is_primary: true) if available, otherwise use any calendar from list_calendars().
 - calendar_id values must include the full format with @ suffix (e.g., "id@group.calendar.google.com") - NEVER truncate or modify them."""
@@ -212,9 +218,15 @@ Example: "When is my first event tomorrow?" → read_schedule(tomorrow 12:00 AM,
 """,
     "create_event": """3. CREATE EVENT
 Query intent: User wants to schedule/create a new event
-Pattern: list_calendars() → read_schedule(start_time, end_time) → request_create_event(event_details, calendar_id)
+Pattern: list_calendars() (skip it if it has already been called) → request_create_event(event_details, calendar_id)
 
-Calendar selection: MUST call list_calendars() FIRST to get calendars with write permissions, then use calendar_id from that result. Prefer primary calendar (is_primary: true) if available.
+No exact time given (a day, a range, "sometime this weekend", "a free hour Thursday"): call find_free_time first, then put the event at a block's earliest_start.
+- duration_minutes: the length the user gave, otherwise a typical length for that kind of event (1 hour if unsure)
+- buffer_minutes: what the user asked for ("with 15 minutes on either side"), otherwise 0
+- Narrow the hours with earliest_time/latest_time when the user does ("in the afternoon" → 12:00-17:00, "evening" → 17:00-22:00)
+- Pick a time that makes sense for that kind of event (a haircut at 10 AM, not 5 AM), on the soonest day that works, unless the request points to a better one. Don't favor early hours just because they come first. If no block fits, call do_nothing saying there's no free time that fits.
+
+Calendar selection: use a calendar_id from list_calendars() (its earlier result if it has already been called). Prefer primary calendar (is_primary: true) if available.
 
 Optional: If checking for conflicts with existing events, call search_events first
 
@@ -225,8 +237,9 @@ Description parameter rules: Only include description parameter if:
 - The description is necessary for clarity (e.g., meeting agenda, important context)
 - Do NOT add descriptions automatically or make them up - most events don't need descriptions
 
-Example: "Can you schedule a haircut for me next week?" → list_calendars() → read_schedule(Monday 12:00 AM, Friday 11:59 PM) → request_create_event(summary: "haircut", start_time: available_time, end_time: available_time + duration, calendar_id: selected_from_list_calendars) - NO description parameter
-Example: "Schedule a team meeting next Tuesday with description 'Discuss Q1 goals'" → list_calendars() → request_create_event(..., description: "Discuss Q1 goals", calendar_id: selected_from_list_calendars)
+Example: "Can you schedule a haircut for me next week?" with a SUGGESTED TIMES block and list_calendars() already called → request_create_event(summary: "Haircut", start_time: slot 1 start, end_time: slot 1 end, calendar_id: primary calendar) - one call, NO description parameter
+Example: "Can you schedule a haircut for me next week?" with no blocks → list_calendars() → find_free_time(Monday 12:00 AM, Friday 11:59 PM, duration_minutes: 45) → request_create_event(summary: "Haircut", start_time: chosen block's earliest_start, end_time: that + 45 minutes, calendar_id: selected_from_list_calendars)
+Example: "Schedule a team meeting next Tuesday at 10 with description 'Discuss Q1 goals'" → list_calendars() (unless already called) → request_create_event(..., description: "Discuss Q1 goals", calendar_id: primary calendar)
 
 """,
     "update_event": """4. UPDATE EVENT
@@ -234,7 +247,7 @@ Query intent: User wants to modify an existing event
 Pattern: search_events(keywords, start_time, end_time) → EXTRACT event_id and calendar_id from results → request_update_event(event_id, calendar_id, new_details)
 
 MANDATORY: After search_events returns results, you MUST extract the event_id and calendar_id from the matching event, then call request_update_event with those values.
-Optional: If checking availability at new time, call read_schedule(new_time_window) before request_update_event
+If the new time isn't exact ("move it to sometime Friday afternoon"), call find_free_time for that window with the event's current length, then use a block's earliest_start
 
 Calendar selection: Cannot change the calendar_id for an existing event, but must verify write access exists.
 
@@ -325,8 +338,11 @@ _EXAMPLES = [
    → search_events(keywords: "haircut", start_time: Saturday 12:00 AM, end_time: Sunday 11:59 PM)
    → request_delete_event(event_id: found_event_id, calendar_id: found_calendar_id)"""),
     ("create_event", """"Can you schedule a haircut for me next week?"
-   → list_calendars() → read_schedule(start_time: Monday 12:00 AM, end_time: Friday 11:59 PM)
-   → request_create_event(summary: "haircut", start_time: available_time, end_time: available_time + duration, calendar_id: selected_from_list_calendars)"""),
+   With a SUGGESTED TIMES block, list_calendars() already called:
+   → request_create_event(summary: "Haircut", start_time: slot 1 start, end_time: slot 1 end, calendar_id: primary calendar)
+   Without them:
+   → list_calendars() → find_free_time(start_time: Monday 12:00 AM, end_time: Friday 11:59 PM, duration_minutes: 45)
+   → request_create_event(summary: "Haircut", start_time: chosen block's earliest_start, end_time: that + 45 minutes, calendar_id: selected_from_list_calendars)"""),
     ("update_event", """"Can you move my haircut to Thursday next week?"
    → search_events(keywords: "haircut", start_time: Monday 12:00 AM, end_time: Friday 11:59 PM)
    → read_schedule(start_time: Thursday 12:00 AM, end_time: Thursday 11:59 PM)
@@ -344,7 +360,7 @@ _EXAMPLES = [
    → show_schedule(start_time: next weekend Saturday 00:00:00, end_time: next weekend Sunday 23:59:59)
    CRITICAL: Weekend means Saturday-Sunday ONLY. Calculate this weekend first, then add 7 days to get next weekend's Saturday. Verify the dates are Saturday-Sunday before calling the tool."""),
     ("create_event", """"Put Lola's birthday on my calendar on February 2."
-   → list_calendars() → request_create_event(summary: "Lola's Birthday", start_date: "2026-02-02", end_date: "2026-02-03", calendar_id: selected_from_list_calendars)
+   → list_calendars() (unless already called) → request_create_event(summary: "Lola's Birthday", start_date: "2026-02-02", end_date: "2026-02-03", calendar_id: selected_from_list_calendars)
    Note: Birthdays are all-day events - use start_date and end_date (end_date is exclusive, so use the next day for single-day events)."""),
 ]
 
@@ -387,20 +403,51 @@ unless it clearly contradicts the request (wrong day, wrong kind of event).
 - Never ask the user which event they meant."""
 
 
-_USING_CALENDAR_LIST_SECTION = """USING THE CALENDAR LIST:
-A WRITABLE CALENDARS block may follow. It is exactly what list_calendars() would return, so when it is present
-don't call list_calendars() - pick the calendar from the block (prefer the primary one) and continue."""
+_USING_SUGGESTED_TIMES_SECTION = """USING SUGGESTED TIMES:
+A SUGGESTED TIMES block may follow for requests that don't give an exact time. An automatic check read the days,
+length and buffer from the request, found the free time on those days, and ranked the slots against the request.
+- If the first slot fits the request, create the event at exactly that start and end now - don't call
+  find_free_time or read_schedule.
+- If a runner-up clearly fits better (e.g. it matches "afternoon" and the first doesn't), use it instead.
+- If none fits, or the length or days look wrong for the request, call find_free_time yourself.
+- If the block says nothing is free, call do_nothing saying no free time fits (don't search the same days again)."""
 
 
-def _build_calendar_list_section(calendars: Optional[List[Dict[str, Any]]]) -> str:
-    """Per-request writable calendars for create requests (sent by the backend; saves a list_calendars call)"""
-    if not calendars:
+def _build_suggested_times_section(prepass: Optional[Dict[str, Any]]) -> str:
+    """Per-request free slots from the create pre-pass (sent after the time context)"""
+    if not prepass:
         return ""
-    lines = ["WRITABLE CALENDARS (same as list_calendars()):"]
-    for cal in calendars:
-        primary = " · primary" if cal.get("is_primary") else ""
-        lines.append(f'- {cal.get("name")} · calendar_id: {cal.get("id")} · access_role: {cal.get("access_role")}{primary}')
+    days = ", ".join(prepass.get("days") or [])
+    buffer = prepass.get("buffer_minutes") or 0
+    lines = [
+        "SUGGESTED TIMES (automatic; may be wrong - if they don't fit the request, use find_free_time)",
+        f"Read from the request: {prepass.get('duration_minutes')} minutes"
+        + (f", {buffer} minutes of buffer on each side" if buffer else "")
+        + f", on {days}.",
+    ]
+    top = prepass.get("top") or []
+    if not top:
+        lines.append("Nothing is free on those days for that length.")
+        return "\n".join(lines)
+    for n, slot in enumerate(top, 1):
+        lines.append(f"  {n}. {slot.get('when')} (probability {slot.get('probability')})")
+        lines.append(f"     start: {slot.get('start')} · end: {slot.get('end')}")
     return "\n".join(lines)
+
+
+def _prefetched_calendar_messages(calendars: Optional[List[Dict[str, Any]]]) -> List[BaseMessage]:
+    """The writable calendars the backend sent for a create request, as a list_calendars() call already made.
+
+    Same data list_calendars() returns. As a text block the model still called list_calendars()
+    to be sure; as a call it has already made, it uses the result (saves a model call).
+    """
+    if not calendars:
+        return []
+    call_id = "call_list_calendars_prefetched"
+    return [
+        AIMessage(content="", tool_calls=[{"name": "list_calendars", "args": {}, "id": call_id}]),
+        ToolMessage(content=json.dumps(calendars), tool_call_id=call_id),
+    ]
 
 
 def _event_time_iso(value: Any) -> str:
@@ -475,7 +522,7 @@ def _build_kind_sections(kind: str) -> List[str]:
         patterns,
         _build_find_event_section() if finds_existing_event else "",
         _USING_PREPASS_SECTION if finds_existing_event else "",
-        _USING_CALENDAR_LIST_SECTION if kind == "create_event" else "",
+        _USING_SUGGESTED_TIMES_SECTION if kind == "create_event" else "",
         _build_tool_result_processing_section() if kind != "show_schedule" else "",
         _build_error_handling_section() if writes else "",
         _build_examples_section(kind),
@@ -560,6 +607,7 @@ class State(TypedDict):
     current_day_of_week: Optional[str]  # Full day name (e.g., "Monday", "Tuesday")
     request_kind: Optional[str]  # Pre-pass request kind when Jev was sure (e.g. "delete_event"); None otherwise
     prepass_event: Optional[dict]  # Pre-pass likely events for find/update/delete (status, top, searched_from/to); None otherwise
+    prepass_time: Optional[dict]  # Create pre-pass suggested slots (status, top, duration/buffer_minutes, days); None otherwise
 
 
 class OutputState(TypedDict):
@@ -619,13 +667,15 @@ def agent_node(state: State) -> Dict[str, Any]:
     if prepass_section:
         system_messages.append(SystemMessage(content=prepass_section))
     if state.get("request_kind") == "create_event":
-        calendar_section = _build_calendar_list_section((state.get("auth") or {}).get("writable_calendars"))
-        if calendar_section:
-            system_messages.append(SystemMessage(content=calendar_section))
+        times_section = _build_suggested_times_section(state.get("prepass_time"))
+        if times_section:
+            system_messages.append(SystemMessage(content=times_section))
     
     # Initialize messages if empty
     if not messages:
         messages = system_messages + [HumanMessage(content=query)]
+        if state.get("request_kind") == "create_event":
+            messages += _prefetched_calendar_messages((state.get("auth") or {}).get("writable_calendars"))
     else:
         # Ensure system messages come first if messages already exist
         if not any(isinstance(msg, SystemMessage) for msg in messages):

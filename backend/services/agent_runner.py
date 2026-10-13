@@ -13,8 +13,10 @@ and LANGSMITH_TRACING / LANGSMITH_PROJECT / LANGSMITH_API_KEY for traces.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
@@ -44,6 +46,17 @@ def get_agent_graph():
 
                 _graph = cali_graph
     return _graph
+
+
+def relative_dates_sheet(now: datetime, timezone_name: str) -> str:
+    """The agent's relative-dates cheat sheet ("tomorrow", "next Friday", ...) without its ISO ranges.
+
+    Anything else that reads the user's words (the Jev event finder) uses this so it resolves
+    dates the same way the agent does.
+    """
+    from agent.time_reference import generate_time_reference
+
+    return re.sub(r" \(\d{4}-\d\d-\d\dT[^)]*\)", "", generate_time_reference(now, timezone_name))
 
 
 async def run_agent(input_state: Dict[str, Any]) -> Dict[str, Any]:

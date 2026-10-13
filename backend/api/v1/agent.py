@@ -138,6 +138,35 @@ async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optio
     }
 
 
+PREPASS_TIME_TIMEOUT_SECONDS = 4.0
+
+
+async def _find_prepass_time(user_id: str, query_text: str, request_kind: Optional[str], user_timezone: str) -> Optional[dict]:
+    """Create pre-pass: Jev's suggested free times for a new event without an exact time, else None."""
+    if request_kind != "create_event" or not get_settings().agent_prepass_time:
+        return None
+    from services.time_finder import find_time_for_new_event
+
+    start = time.time()
+    try:
+        result = await asyncio.wait_for(
+            find_time_for_new_event(user_id, query_text, user_timezone),
+            timeout=PREPASS_TIME_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"Pre-pass time lookup skipped: {type(e).__name__}: {e}")
+        log_step("backend.api.action.prepass_time", time.time() - start, details=f"skipped={type(e).__name__}")
+        return None
+    log_step("backend.api.action.prepass_time", time.time() - start, details=f"status={result['status']} jev_ms={result['jev_ms']}")
+    logger.info(
+        f"Pre-pass time: status={result['status']} duration={result['duration_minutes']} buffer={result['buffer_minutes']} "
+        f"days={result['days']} slots={result.get('slot_count')} seconds={time.time() - start:.2f} "
+        f"top={[(s['when'], s['probability']) for s in result.get('top', [])]}"
+    )
+    # Only a "slots" or "none" answer tells the agent something it couldn't work out itself
+    return result if result["status"] in ("slots", "none") else None
+
+
 def _writable_calendars(user_id: str) -> list:
     """Calendars the user can write to, in the agent's list_calendars format.
 
@@ -307,6 +336,7 @@ async def agent_action(
         calendars_task = asyncio.create_task(asyncio.to_thread(_writable_calendars, current_user.id))
         request_kind = await _classify_request_kind(query_text)
         prepass_event = await _find_prepass_event(current_user.id, query_text, request_kind, user_timezone)
+        prepass_time = await _find_prepass_time(current_user.id, query_text, request_kind, user_timezone)
         try:
             auth["writable_calendars"] = await calendars_task
         except Exception as e:
@@ -317,6 +347,7 @@ async def agent_action(
             "auth": auth,
             "request_kind": request_kind,
             "prepass_event": prepass_event,
+            "prepass_time": prepass_time,
             "success": False,
             "type": None,
             "metadata": {},

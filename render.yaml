@@ -40,6 +40,8 @@ services:
         sync: false
       - key: AGENT_PREPASS_EVENT
         sync: false
+      - key: AGENT_PREPASS_TIME
+        sync: false
       - key: LANGGRAPH_AGENT_URL
         sync: false
       - key: LANGSMITH_API_KEY

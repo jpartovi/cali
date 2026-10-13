@@ -387,6 +387,71 @@ async def find_event(
         ) from e
 
 
+@router.post("/free")
+async def find_free_time(
+    payload: Dict[str, Any],
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Find free blocks where an event of a given length fits.
+
+    Expects JSON body with:
+    - start_time / end_time: ISO datetimes bounding where to look
+    - duration_minutes: length of the event to fit
+    - buffer_minutes: time to keep clear before and after it (default 0)
+    - earliest_time / latest_time: hours of each day to consider, "HH:MM" (default 05:00-24:00)
+
+    Returns {blocks: [{start, end, minutes, earliest_start, latest_end, before, after}], block_count}.
+    """
+    from services.free_time import DEFAULT_EARLIEST, DEFAULT_LATEST, find_free_time_for_user, parse_time_of_day
+
+    try:
+        start_time_str = payload.get("start_time")
+        end_time_str = payload.get("end_time")
+        if not start_time_str or not end_time_str:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="start_time and end_time are required")
+        duration_minutes = int(payload.get("duration_minutes") or 0)
+        buffer_minutes = int(payload.get("buffer_minutes") or 0)
+        if duration_minutes <= 0 or buffer_minutes < 0:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="duration_minutes must be positive and buffer_minutes not negative")
+        earliest = parse_time_of_day(payload["earliest_time"]) if payload.get("earliest_time") else DEFAULT_EARLIEST
+        latest = parse_time_of_day(payload["latest_time"]) if payload.get("latest_time") else DEFAULT_LATEST
+        if earliest is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="earliest_time can't be 24:00")
+
+        user_timezone = get_user_timezone(current_user.id)
+        tz = ZoneInfo(user_timezone)
+        start_time = _parse_datetime_or_date(start_time_str)
+        end_time = _parse_datetime_or_date(end_time_str)
+        start_time = start_time.astimezone(tz) if start_time.tzinfo else start_time.replace(tzinfo=tz)
+        end_time = end_time.astimezone(tz) if end_time.tzinfo else end_time.replace(tzinfo=tz)
+        if end_time <= start_time:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="end_time must be after start_time")
+
+        return await find_free_time_for_user(
+            current_user.id,
+            start_time=start_time,
+            end_time=end_time,
+            duration_minutes=duration_minutes,
+            buffer_minutes=buffer_minutes,
+            timezone_name=user_timezone,
+            earliest=earliest,
+            latest=latest,
+        )
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid input: {str(e)}") from e
+    except GoogleCalendarAuthError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
+    except Exception as e:
+        logger.exception(f"Unexpected error finding free time user_id={current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while finding free time. Please try again.",
+        ) from e
+
+
 @router.get("/{calendar_id}/events/{event_id}")
 async def get_event(
     calendar_id: str,

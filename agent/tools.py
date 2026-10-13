@@ -551,12 +551,61 @@ def find_event(description: str, start_time: str, end_time: str) -> Dict[str, An
         return {"status": "error", "message": str(e)}
 
 
+@tool
+def find_free_time(
+    start_time: str,
+    end_time: str,
+    duration_minutes: int,
+    buffer_minutes: int = 0,
+    earliest_time: Optional[str] = None,
+    latest_time: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Find free blocks of time where an event of a given length fits.
+    
+    Busy time is every timed event on the user's calendars; all-day events and declined
+    invitations don't count. Only the hours earliest_time-latest_time of each day are
+    considered (5 AM to midnight unless set).
+    
+    Args:
+        start_time: Timezone-aware ISO datetime with offset where the search starts
+                    (e.g. Saturday 00:00 for "this weekend")
+        end_time: Timezone-aware ISO datetime with offset where the search ends
+        duration_minutes: Length of the event to fit, in minutes
+        buffer_minutes: Minutes to keep free before and after it (e.g. 15 for travel); 0 for none
+        earliest_time: Earliest time of day to consider, "HH:MM" 24-hour; omit for 05:00
+        latest_time: Latest time of day to consider, "HH:MM" 24-hour ("24:00" = midnight); omit for midnight
+    
+    Returns:
+        Dict with "blocks", in time order, each with:
+        - start, end, minutes: the whole free gap
+        - earliest_start, latest_end: where the event can go with the buffer kept clear
+        - before / after: the event right before / after the gap ({summary, time}), or null
+          when the gap runs to the edge of the day's hours
+        and "block_count". No blocks means nothing fits.
+    """
+    try:
+        auth = get_auth_context()
+        client = get_calendar_client()
+        return _run_async(client.find_free_time(
+            start_time,
+            end_time,
+            int(duration_minutes),
+            int(buffer_minutes or 0),
+            earliest_time=_optional(earliest_time),
+            latest_time=_optional(latest_time),
+            auth=auth,
+        ))
+    except Exception as e:
+        logger.error(f"Error in find_free_time: {str(e)}", exc_info=True)
+        return {"error": str(e)}
+
 
 # Lists of tools for easy access
 # AGENT_FIND_EVENT=jev offers find_event (TypeSafe Jev picks the event) next to search_events
 FIND_EVENT_ENABLED = os.getenv("AGENT_FIND_EVENT", "").strip().lower() == "jev"
 
-INTERNAL_TOOLS = [read_schedule, search_events, read_event, list_calendars]
+INTERNAL_TOOLS = [read_schedule, search_events, read_event, list_calendars, find_free_time]
 if FIND_EVENT_ENABLED:
     INTERNAL_TOOLS.append(find_event)
 EXTERNAL_TOOLS = [

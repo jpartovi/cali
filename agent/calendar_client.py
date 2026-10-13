@@ -72,6 +72,26 @@ class CalendarClient(ABC):
         pass
 
     @abstractmethod
+    async def find_free_time(
+        self,
+        start_time: str,
+        end_time: str,
+        duration_minutes: int,
+        buffer_minutes: int = 0,
+        earliest_time: Optional[str] = None,
+        latest_time: Optional[str] = None,
+        auth: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Free blocks in a window where an event of duration_minutes fits with buffer_minutes around it.
+        
+        Returns:
+            Dict with blocks (start, end, minutes, earliest_start, latest_end, before, after)
+            and block_count
+        """
+        pass
+
+    @abstractmethod
     async def read_event(
         self,
         event_id: str,

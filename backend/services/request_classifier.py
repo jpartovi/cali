@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 REQUEST_KINDS: Dict[str, str] = {
     "show_schedule": "See what's on the calendar for a day or a span of time",
     "find_event": "Find out when, where or what a specific existing event is",
-    "create_event": "Put something new on the calendar: schedule, add, book or block off an event, birthday or reminder",
+    "create_event": "Put something new on the calendar: schedule, add, book or block off an event, birthday or reminder, or find a free time for one",
     "update_event": "Change one event that is already on the calendar: move or reschedule it, rename it, or change its length, location or notes",
     "delete_event": "Remove or cancel one event that is already on the calendar",
     "other": "Anything else: not about the calendar, unclear, or affecting several events at once (e.g. clear my afternoon)",
