@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from domains.auth.repository import AuthRepository
+from core.user_cache import get_cached_user
 from db.session import get_service_client
 from utils.errors import SupabaseAuthError, SupabaseStorageError
 
@@ -90,22 +91,27 @@ def get_user_timezone(user_id: str) -> str:
     """
     supabase_client = get_service_client()
     try:
-        user_result = (
-            supabase_client.table("users")
-            .select("timezone")
-            .eq("id", user_id)
-            .single()
-            .execute()
-        )
+        # The auth check just cached this user's row; reuse its timezone instead of querying again
+        cached = get_cached_user(user_id)
+        if cached is not None and "timezone" in cached:
+            user_data = {"timezone": cached.get("timezone")}
+        else:
+            user_data = (
+                supabase_client.table("users")
+                .select("timezone")
+                .eq("id", user_id)
+                .single()
+                .execute()
+            ).data
         
-        if not user_result.data:
+        if not user_data:
             logger.error(f"No user data returned user_id={user_id}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="An error occurred while retrieving your timezone settings. Please try again."
             )
         
-        user_timezone = user_result.data.get("timezone")
+        user_timezone = user_data.get("timezone")
         
         # Validate timezone is set and not empty
         if not user_timezone or not user_timezone.strip():

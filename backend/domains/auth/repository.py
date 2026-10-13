@@ -11,6 +11,7 @@ import httpx
 from postgrest import APIError
 
 from core.config import get_settings
+from core.user_cache import cache_user, get_cached_user
 from db.session import get_service_client
 from utils.errors import SupabaseAuthError, SupabaseStorageError
 
@@ -125,6 +126,8 @@ class AuthRepository:
         except APIError as exc:
             raise SupabaseStorageError(exc.message) from exc
 
+        if result.data:
+            cache_user(result.data[0])
         return result.data[0] if result.data else payload
 
     async def get_user_from_token(self, access_token: str) -> Dict[str, Any]:
@@ -164,7 +167,10 @@ class AuthRepository:
         except jwt.InvalidTokenError as exc:
             raise SupabaseAuthError(f"Invalid token: {str(exc)}") from exc
 
-        # Fetch user from database
+        # Fetch user from database (a recent copy is reused; the token itself is always verified above)
+        cached = get_cached_user(user_id)
+        if cached is not None:
+            return cached
         client = get_service_client()
         try:
             result = client.table("users").select("*").eq("id", user_id).execute()
@@ -179,6 +185,7 @@ class AuthRepository:
         if not result.data:
             raise SupabaseAuthError("User not found")
 
+        cache_user(result.data[0])
         return result.data[0]
 
 
