@@ -289,6 +289,8 @@ class GoogleCalendarHttpClient:
         """List events for bootstrap or incremental sync.
 
         Incremental ``syncToken`` cannot be combined with time filters or orderBy.
+        The initial listing must not use orderBy either: Google then leaves out
+        ``nextSyncToken``, and every later sync has to list the whole window again.
         Returns ``items`` and ``nextSyncToken``.
         """
         path = f"/calendars/{_encode_path_segment(calendar_id)}/events"
@@ -302,8 +304,6 @@ class GoogleCalendarHttpClient:
                 params["timeMin"] = time_min
             if time_max:
                 params["timeMax"] = time_max
-            if time_min and time_max:
-                params["orderBy"] = "startTime"
 
         events: List[Dict[str, Any]] = []
         page_token: Optional[str] = None

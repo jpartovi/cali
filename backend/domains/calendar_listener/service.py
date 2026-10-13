@@ -46,6 +46,12 @@ async def run_off_event_loop(make_work: Callable[[], Awaitable[T]]) -> T:
     """
     return await asyncio.to_thread(lambda: asyncio.run(make_work()))
 
+
+def _first_sync_of_day(last_synced_at: Optional[str]) -> bool:
+    """True when a watch hasn't synced yet today (UTC)."""
+    last = parse_iso(last_synced_at)
+    return last is None or last.astimezone(timezone.utc).date() < datetime.now(timezone.utc).date()
+
 SUPPRESSION_WINDOW = timedelta(minutes=2)
 SYNC_LOCK_STALE = timedelta(minutes=2)
 WATCH_RENEW_LEAD = timedelta(hours=24)
@@ -487,6 +493,11 @@ class CalendarListenerService:
             return
         access_token = await self._token_for_account(account)
         sync_token = watch.get("sync_token")
+        if sync_token and _first_sync_of_day(watch.get("last_synced_at")):
+            # The snapshot window moves forward a day each day, and incremental syncs only
+            # return events that changed, so list the window again once a day to pick up
+            # events that simply came into range
+            sync_token = None
         async with GoogleCalendarHttpClient() as client:
             if sync_token:
                 try:
@@ -617,6 +628,13 @@ class CalendarListenerService:
         previous = self.listener_repo.get_snapshot(
             account["user_id"], google_calendar_id, snapshot["google_event_id"]
         )
+        if previous is None:
+            # Incremental syncs report changes at any date; only keep events in the window
+            start_at = parse_iso(snapshot.get("start_at"))
+            if start_at and start_at > now + HORIZON_FUTURE:
+                return
+        elif snapshot.get("etag") and previous.get("etag") == snapshot.get("etag"):
+            return  # Unchanged since the last sync (the daily re-list sees most events again)
         stored = self.listener_repo.upsert_snapshot(snapshot)
         await self._after_snapshot(previous=previous, current=stored)
 
@@ -682,6 +700,8 @@ class CalendarListenerService:
             )
         if cancelled or all_day:
             return
+        if previous is not None and not times_changed:
+            return  # Its start and end jobs already exist
         start_at = parse_iso(current.get("start_at"))
         end_at = parse_iso(current.get("end_at"))
         now = datetime.now(timezone.utc)
