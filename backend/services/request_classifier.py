@@ -23,8 +23,11 @@ logger = logging.getLogger(__name__)
 REQUEST_KINDS: Dict[str, str] = {
     "show_schedule": "See what's on the calendar for a day or a span of time",
     "find_event": "Find out when, where or what a specific existing event is",
-    "create_event": "Put something new on the calendar: schedule, add, book or block off an event, birthday or reminder, or find a free time for one",
-    "update_event": "Change one event that is already on the calendar: move or reschedule it, rename it, or change its length, location or notes",
+    "create_event": "Put something new on the calendar: schedule, add, book or block off an event, birthday or reminder, or find a free time for one (not inviting someone to an event that may already be planned)",
+    "update_event": "Change one event that is already on the calendar: move or reschedule it, rename it, change its length, location or notes, or take someone off it",
+    # Kept apart from create and update: "invite Henry to dinner tomorrow" can mean adding him to a
+    # dinner that's already planned or making a new one, and only the calendar can tell which
+    "invite_people": "Invite or add people to an event that may already be on the calendar or may be new (e.g. invite Henry to dinner tomorrow, add Sam to my 3pm, bring Ana to lunch Friday)",
     "delete_event": "Remove or cancel one event that is already on the calendar",
     "other": "Anything else: not about the calendar, unclear, or affecting several events at once (e.g. clear my afternoon)",
 }

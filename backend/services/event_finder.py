@@ -13,7 +13,7 @@ from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from typesafe_sdk import Choice, TypeSafeError
+from typesafe_sdk import Choice, Noul, TypeSafeError
 
 from core.config import get_settings
 from core.timing_logger import log_step
@@ -266,3 +266,108 @@ async def find_event_for_user(
         if key != NONE_KEY and p >= CANDIDATE_MIN_PROBABILITY
     ][:MAX_AMBIGUOUS_CANDIDATES]
     return {"status": "ambiguous" if candidates else "none", "event": None, "candidates": candidates, **base}
+
+
+# A request "mentions" an event at this probability or higher (pre-pass)
+MENTION_MIN_PROBABILITY = 0.5
+# One yes/no question per event; past this many events only the main-event question is asked
+MAX_MENTION_QUESTIONS = 120
+
+
+async def find_request_events(
+    user_id: str,
+    text: str,
+    events: List[Dict[str, Any]],
+    timezone_name: str,
+) -> Dict[str, Any]:
+    """Every event the request refers to, and which one it most likely acts on (pre-pass).
+
+    One Jev call: a choice of the event the request acts on (shows, changes, cancels or
+    invites people to), plus a yes/no per event for whether the request refers to it at
+    all, so "move my haircut to right after lunch" brings in the haircut and lunch.
+    `events` are in the finder's format (e.g. from snapshot_events_for_user).
+
+    Returns a dict with:
+      status: "match" | "ambiguous" | "none" | "too_many" for the event acted on (as find_event_for_user)
+      top: likely events acted on, with probability
+      mentioned: every event the request refers to (probability >= MENTION_MIN_PROBABILITY), highest first
+      event_count, jev_ms
+    """
+    settings = get_settings()
+    if not settings.typesafe_api_key:
+        raise EventFinderNotConfigured("TYPESAFE_API_KEY is not set")
+    base: Dict[str, Any] = {"event_count": len(events), "jev_ms": 0, "top": [], "mentioned": []}
+    if not events:
+        return {"status": "none", **base}
+    if len(events) > MAX_CANDIDATES:
+        return {"status": "too_many", **base}
+
+    tz = ZoneInfo(timezone_name)
+    now = datetime.now(tz)
+    keyed = {f"e{i}": event for i, event in enumerate(events)}
+    options = {key: _option_for(event, tz) for key, event in keyed.items()}
+    questions: Dict[str, Any] = {
+        "event": Choice(
+            instructions=(
+                "Which existing calendar event is this request acting on: showing, changing, cancelling, or inviting, "
+                "adding or removing people? If the request could be about an existing event (e.g. 'invite Henry to "
+                "dinner tomorrow' and there is a dinner tomorrow), pick it. 'none' only if it clearly needs a new event."
+            ),
+            criteria={**options, NONE_KEY: "No existing event: the request doesn't act on one of these"},
+        ),
+    }
+    ask_mentions = len(events) <= MAX_MENTION_QUESTIONS
+    if ask_mentions:
+        for key in keyed:
+            questions[f"m_{key}"] = Noul(
+                instructions=(
+                    f"Could the request be referring to event {key}? Yes if the request names it, describes it "
+                    "(e.g. 'dinner tomorrow', 'my next lunch with Henry') or uses it as a reference point "
+                    "(e.g. 'right after lunch'), even if the request might instead mean a new event."
+                )
+            )
+
+    jev_start = time.time()
+    try:
+        response = await get_jev_client().system_one(
+            state={
+                "request": text,
+                "now": now.strftime("%a %b %-d %Y, %-I:%M %p"),
+                "relative_dates": relative_dates_sheet(now, timezone_name),
+                # Questions refer to events by key; one copy of the list keeps the request small
+                "events": {key: f"{o['title']} ({o['when']})" for key, o in options.items()},
+            },
+            questions=questions,
+            timeout=JEV_TIMEOUT_SECONDS,
+        )
+    except TypeSafeError:
+        logger.exception("Jev request events failed user_id=%s", user_id)
+        raise
+    jev_ms = round((time.time() - jev_start) * 1000)
+    log_step("backend.event_finder.request_events_jev", jev_ms / 1000, details=f"events={len(events)}")
+    base["jev_ms"] = jev_ms
+
+    def described(key: str, p: float) -> Dict[str, Any]:
+        event = keyed[key]
+        return {
+            **_public_event(event),
+            "when": _describe_when(event.get("start"), event.get("end"), tz),
+            "probability": round(p, 3),
+        }
+
+    ranked = sorted(response.choices["event"].probabilities.items(), key=lambda kv: kv[1], reverse=True)
+    top_key, top_p = ranked[0]
+    runner_up_p = ranked[1][1] if len(ranked) > 1 else 0.0
+    base["top"] = [described(k, p) for k, p in ranked if k != NONE_KEY and p >= TOP_MIN_PROBABILITY][:MAX_TOP_EVENTS]
+    if ask_mentions:
+        mentions = sorted(((k, response.nouls[f"m_{k}"].noul) for k in keyed), key=lambda kv: kv[1], reverse=True)
+        base["mentioned"] = [described(k, p) for k, p in mentions if p >= MENTION_MIN_PROBABILITY]
+
+    if top_key == NONE_KEY:
+        status = "none"
+    elif top_p >= MATCH_MIN_PROBABILITY and top_p - runner_up_p >= MATCH_MIN_MARGIN:
+        status = "match"
+    else:
+        status = "ambiguous"
+    return {"status": status, **base}
+

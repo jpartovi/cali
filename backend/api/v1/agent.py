@@ -69,7 +69,10 @@ async def _classify_request_kind(query_text: str) -> Optional[str]:
 
 
 # Stage 2: only these kinds act on an existing event, so only they look one up
-EVENT_KINDS = ("find_event", "update_event", "delete_event")
+# Kinds whose requests can refer to events already on the calendar ("right after lunch" in a create too)
+EVENT_KINDS = ("find_event", "update_event", "delete_event", "invite_people", "create_event")
+# Kinds that act on an existing event: if the snapshots hold nothing it refers to, search Google further out
+EXISTING_EVENT_KINDS = ("find_event", "update_event", "delete_event", "invite_people")
 # Default window when the request names no time ("cancel my haircut")
 PREPASS_EVENT_DAYS_BACK = 1
 PREPASS_EVENT_DAYS_AHEAD = 30
@@ -79,11 +82,12 @@ PREPASS_EVENT_TIMEOUT_SECONDS = 4.0
 
 
 async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optional[str], user_timezone: str) -> Optional[dict]:
-    """Stage 2 pre-pass: Jev's likely events for find/update/delete requests, else None."""
+    """Event pre-pass: the events a request refers to (and the one it acts on), else None."""
     if request_kind not in EVENT_KINDS or not get_settings().agent_prepass_event:
         return None
     from datetime import timedelta
-    from services.event_finder import find_event_for_user, snapshot_events_for_user
+    from domains.calendars.service import CalendarService
+    from services.event_finder import find_request_events, snapshot_events_for_user
 
     today = datetime.now(ZoneInfo(user_timezone)).date()
     start_date = today - timedelta(days=PREPASS_EVENT_DAYS_BACK)
@@ -96,20 +100,17 @@ async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optio
         nonlocal source, end_date
         # 1) The listener's copy of the next two weeks: a database read, no Google calls
         events = await asyncio.to_thread(snapshot_events_for_user, user_id, start_date, snapshot_end, user_timezone)
-        if events:
-            found = await find_event_for_user(
-                user_id=user_id, description=query_text, start_date=start_date,
-                end_date=snapshot_end, timezone_name=user_timezone, events=events,
-            )
-            if found["status"] in ("match", "ambiguous"):
-                end_date = snapshot_end
-                return found
+        found = await find_request_events(user_id, query_text, events, user_timezone)
+        if found["status"] in ("match", "ambiguous") or found["mentioned"] or request_kind not in EXISTING_EVENT_KINDS:
+            end_date = snapshot_end
+            return found
         # 2) Nothing there: search the full window from Google
         source = "google"
-        return await find_event_for_user(
-            user_id=user_id, description=query_text, start_date=start_date,
-            end_date=end_date, timezone_name=user_timezone,
+        result = await CalendarService().events_for_date_range(
+            user_id=user_id, start_date=start_date, end_date=end_date, timezone_name=user_timezone,
         )
+        events = [e for e in result.get("events", []) if e.get("id") and e.get("calendar_id")]
+        return await find_request_events(user_id, query_text, events, user_timezone)
 
     try:
         result = await asyncio.wait_for(lookup(), timeout=PREPASS_EVENT_TIMEOUT_SECONDS)
@@ -124,10 +125,11 @@ async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optio
     )
     if result["status"] == "too_many":
         return None  # Nothing useful to show; the agent searches on its own
-    top = result.get("top") or []
+    top, mentioned = result.get("top") or [], result.get("mentioned") or []
     logger.info(
         f"Pre-pass event: status={result['status']} source={source} events={result['event_count']} "
-        f"seconds={time.time() - start:.2f} top={[(e.get('summary'), e.get('probability')) for e in top]}"
+        f"seconds={time.time() - start:.2f} top={[(e.get('summary'), e.get('probability')) for e in top]} "
+        f"mentioned={[(e.get('summary'), e.get('when'), e.get('probability')) for e in mentioned]}"
     )
     return {
         "status": result["status"],
@@ -135,6 +137,7 @@ async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optio
         "searched_to": end_date.isoformat(),
         "event_count": result["event_count"],
         "top": top,
+        "mentioned": mentioned,
     }
 
 

@@ -273,6 +273,16 @@ Calendar selection: Must use calendar_id from search result (cannot change it).
 Example: "Can you remove my haircut this weekend?" → search_events("haircut", Saturday 12:00 AM, Sunday 11:59 PM) → extract event_id and calendar_id from first result → request_delete_event(event_id, calendar_id)
 
 """,
+    "invite_people": """7. INVITE PEOPLE TO AN EVENT
+Query intent: Invite or add people to an event that may already be on the calendar, or may be new
+First decide which, using the PRE-ANALYSIS (or find_event over the day the request names):
+- If an existing event fits what the request describes ("dinner tomorrow" and there is a Dinner tomorrow), add the people to it:
+  request_update_event(event_id, calendar_id, add_attendee_emails). Don't change its time or title.
+- Only if no existing event fits, create one with them invited: request_create_event(..., attendee_emails), following the CREATE EVENT rules.
+Example: "Invite Henry to dinner tomorrow" with PRE-ANALYSIS showing "Dinner" tomorrow 5:00-5:30 PM → request_update_event(event_id, calendar_id, add_attendee_emails: [Henry's email])
+Example: "Invite Henry to dinner Saturday" with no dinner on Saturday → request_create_event(summary: "Dinner with Henry", ..., attendee_emails: [Henry's email])
+
+""",
     "other": """6. UNSUPPORTED REQUEST
 Query intent: Request is not a calendar operation or is unclear
 Pattern: do_nothing(reason)
@@ -282,7 +292,7 @@ Example: "Hello, how are you?" → do_nothing("Unsupported request")
 }
 
 # Order matches the patterns above; "other" has no pattern of its own beyond do_nothing
-REQUEST_KINDS = ["show_schedule", "find_event", "create_event", "update_event", "delete_event", "other"]
+REQUEST_KINDS = ["show_schedule", "find_event", "create_event", "update_event", "delete_event", "invite_people", "other"]
 
 
 def _build_tool_result_processing_section() -> str:
@@ -388,19 +398,23 @@ Example: "Move SPIKE tomorrow to 2pm"
 
 
 _USING_PREPASS_SECTION = """USING PRE-ANALYSIS:
-A PRE-ANALYSIS block may follow, listing the events an automatic search found most likely to be the one the user means.
-It is the same search find_event runs, so calling find_event again over that range returns the same answer. It matches
-on meaning, not just words: a title that doesn't repeat the user's words can still be right (e.g. "my workout" →
+A PRE-ANALYSIS block may follow. An automatic search over the user's events (the same search find_event runs) lists:
+- EVENT THE REQUEST ACTS ON: the existing event it most likely shows, changes, cancels or invites people to.
+- EVENTS THE REQUEST REFERS TO: every event it mentions, including reference points ("move my haircut to right
+  after lunch" lists the haircut and lunch). Use their start and end times directly (e.g. start right when lunch
+  ends) instead of searching for them.
+It matches on meaning, not just words: a title that doesn't repeat the user's words can still be right (e.g. "my workout" →
 "Barry's", a gym class). It may know what an unfamiliar title refers to when you don't, so a likely event with
 probability 0.9 or higher on the right day is the answer even if you can't tell from the title. Below that, trust it
 unless it clearly contradicts the request (wrong day, wrong kind of event).
-- If the first likely event fits the request, use its event_id and calendar_id directly and call the answer tool now:
-  FIND → show_event, DELETE → request_delete_event, UPDATE → request_update_event.
+- If the event the request acts on fits, use its event_id and calendar_id directly and call the answer tool now:
+  FIND → show_event, DELETE → request_delete_event, UPDATE or INVITE → request_update_event.
   For UPDATE, keep the original duration unless told otherwise (the original start and end are listed). Don't search again.
 - If a runner-up clearly fits better, use that one instead.
 - If the listed events don't fit, find the event with your tools (find_event, search_events, read_schedule).
 - If the block says nothing matched, that range has already been searched. Search again only if the request clearly
-  points outside it (e.g. a date months away); otherwise call do_nothing saying no matching event was found.
+  points outside it (e.g. a date months away); otherwise call do_nothing saying no matching event was found
+  (for an invite, create the event instead).
 - Never ask the user which event they meant."""
 
 
@@ -418,6 +432,8 @@ length and buffer from the request, found the free time on those days, and ranke
 - If the first slot fits the request, create the event at exactly that start and end now - don't call
   find_free_time or read_schedule.
 - If a runner-up clearly fits better (e.g. it matches "afternoon" and the first doesn't), use it instead.
+- If the request ties the time to another event ("right after my lecture"), use that event's end (or start)
+  from PRE-ANALYSIS instead of a slot.
 - If none fits, or the length or days look wrong for the request, call find_free_time yourself.
 - If the block says nothing is free, call do_nothing saying no free time fits (don't search the same days again)."""
 
@@ -494,26 +510,42 @@ def _event_time_iso(value: Any) -> str:
     return value or ""
 
 
-def _build_prepass_event_section(prepass: Optional[Dict[str, Any]]) -> str:
-    """Per-request evidence from the stage 2 pre-pass (sent after the time context)"""
+def _prepass_event_lines(n: int, event: Dict[str, Any]) -> List[str]:
+    calendar = event.get("calendar_name") or event.get("calendar_id")
+    return [
+        f'  {n}. "{event.get("summary")}" · {event.get("when")} · calendar: {calendar} (probability {event.get("probability")})',
+        f'     event_id: {event.get("id")} · calendar_id: {event.get("calendar_id")}',
+        f'     start: {_event_time_iso(event.get("start"))} · end: {_event_time_iso(event.get("end"))}',
+    ]
+
+
+def _build_prepass_event_section(prepass: Optional[Dict[str, Any]], request_kind: Optional[str] = None) -> str:
+    """Per-request evidence from the event pre-pass (sent after the time context)"""
     if not prepass:
+        return ""
+    creating = request_kind == "create_event"
+    # A new event isn't any of these, so for creates only the referenced events matter
+    top = [] if creating else (prepass.get("top") or [])
+    mentioned = prepass.get("mentioned") or []
+    if creating and not mentioned:
         return ""
     lines = [
         "PRE-ANALYSIS (automatic; may be wrong - if it doesn't fit the request, use your tools)",
         f"Searched {prepass.get('event_count', 0)} events from {prepass.get('searched_from')} to {prepass.get('searched_to')}.",
     ]
-    top = prepass.get("top") or []
-    if not top:
+    if not top and not mentioned:
         lines.append("No event in that range matched the request. Don't search the same range again.")
         return "\n".join(lines)
-    lines.append("Likely event:")
-    for n, event in enumerate(top, 1):
-        calendar = event.get("calendar_name") or event.get("calendar_id")
-        lines.append(f'  {n}. "{event.get("summary")}" · {event.get("when")} · calendar: {calendar} (probability {event.get("probability")})')
-        lines.append(f'     event_id: {event.get("id")} · calendar_id: {event.get("calendar_id")}')
-        lines.append(f'     start: {_event_time_iso(event.get("start"))} · end: {_event_time_iso(event.get("end"))}')
-    if prepass.get("status") == "none":
-        lines.append("(The search leaned toward none of these being the event.)")
+    if top:
+        lines.append("EVENT THE REQUEST ACTS ON (most likely first):")
+        for n, event in enumerate(top, 1):
+            lines += _prepass_event_lines(n, event)
+        if prepass.get("status") == "none":
+            lines.append("(The search leaned toward none of these being the event.)")
+    if mentioned:
+        lines.append("EVENTS THE REQUEST REFERS TO:")
+        for n, event in enumerate(mentioned, 1):
+            lines += _prepass_event_lines(n, event)
     return "\n".join(lines)
 
 
@@ -523,6 +555,7 @@ _KIND_LABELS = {
     "create_event": "CREATE AN EVENT",
     "update_event": "UPDATE AN EVENT",
     "delete_event": "DELETE AN EVENT",
+    "invite_people": "INVITE PEOPLE TO AN EVENT (existing or new)",
 }
 
 
@@ -535,10 +568,15 @@ The instructions below cover this kind of request only. If the request is clearl
 
 def _build_kind_sections(kind: str) -> List[str]:
     """Only the instructions a request of this kind needs (smart disclosure)"""
-    finds_existing_event = kind in ("find_event", "update_event", "delete_event")
-    writes = kind in ("create_event", "update_event", "delete_event")
+    # An invite may add people to an existing event or create a new one, so it gets both sets of instructions
+    covers = ["create_event", "update_event", "invite_people"] if kind == "invite_people" else [kind]
+    finds_existing_event = any(k in ("find_event", "update_event", "delete_event") for k in covers)
+    writes = any(k in ("create_event", "update_event", "delete_event") for k in covers)
+    creates = "create_event" in covers
 
-    if kind == "create_event":
+    if creates and finds_existing_event:
+        calendar_rules = _CALENDAR_SELECTION_RULES + "\n\n" + _EXISTING_EVENT_CALENDAR_RULE
+    elif creates:
         calendar_rules = _CALENDAR_SELECTION_RULES
     elif kind in ("update_event", "delete_event"):
         calendar_rules = _EXISTING_EVENT_CALENDAR_RULE
@@ -546,9 +584,9 @@ def _build_kind_sections(kind: str) -> List[str]:
         calendar_rules = ""
 
     patterns = _QUERY_PATTERNS_HEAD
-    if kind in ("update_event", "delete_event"):
+    if any(k in ("update_event", "delete_event") for k in covers):
         patterns += _SEARCH_GUIDE  # Already part of the find_event pattern
-    patterns += _QUERY_PATTERNS[kind] + _QUERY_PATTERNS["other"]
+    patterns += "".join(_QUERY_PATTERNS[k] for k in covers) + _QUERY_PATTERNS["other"]
 
     return [
         _build_agent_identity_section(),
@@ -558,12 +596,12 @@ def _build_kind_sections(kind: str) -> List[str]:
         calendar_rules,
         patterns,
         _build_find_event_section() if finds_existing_event else "",
-        _USING_PREPASS_SECTION if finds_existing_event else "",
+        _USING_PREPASS_SECTION if finds_existing_event or creates else "",
         _USING_SUGGESTED_TIMES_SECTION if kind == "create_event" else "",
-        _GUESTS_SECTION if kind in ("create_event", "update_event") else "",
+        _GUESTS_SECTION if creates or "update_event" in covers else "",
         _build_tool_result_processing_section() if kind != "show_schedule" else "",
         _build_error_handling_section() if writes else "",
-        _build_examples_section(kind),
+        "".join(_build_examples_section(k) for k in covers if k != "invite_people"),
     ]
 
 
@@ -703,7 +741,7 @@ def agent_node(state: State) -> Dict[str, Any]:
         }]),
         SystemMessage(content=time_prompt),
     ]
-    prepass_section = _build_prepass_event_section(state.get("prepass_event"))
+    prepass_section = _build_prepass_event_section(state.get("prepass_event"), state.get("request_kind"))
     if prepass_section:
         system_messages.append(SystemMessage(content=prepass_section))
     if state.get("request_kind") == "create_event":
@@ -717,7 +755,7 @@ def agent_node(state: State) -> Dict[str, Any]:
     # Initialize messages if empty
     if not messages:
         messages = system_messages + [HumanMessage(content=query)]
-        if state.get("request_kind") == "create_event":
+        if state.get("request_kind") in ("create_event", "invite_people"):
             messages += _prefetched_calendar_messages((state.get("auth") or {}).get("writable_calendars"))
     else:
         # Ensure system messages come first if messages already exist
