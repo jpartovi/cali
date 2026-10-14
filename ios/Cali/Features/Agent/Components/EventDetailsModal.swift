@@ -9,6 +9,7 @@ import SwiftUI
 
 struct EventDetailsModal: View {
     let event: CalendarEvent
+    @ObservedObject private var contactDirectory = ContactDirectory.shared
     
     private let cornerRadius: CGFloat = 22
     private let horizontalPadding: CGFloat = 24 // Match AgentModal horizontal padding
@@ -170,7 +171,7 @@ struct EventDetailsModal: View {
     @ViewBuilder
     private func attendeeRow(attendee: CalendarEvent.Attendee) -> some View {
         HStack(spacing: 6) {
-            Text(attendee.displayName ?? attendee.email ?? "Unknown")
+            Text(contactDirectory.name(for: attendee.email) ?? attendee.email ?? attendee.displayName ?? "Unknown")
                 .font(.system(size: 13, weight: .regular))
                 .foregroundColor(ColorPalette.Text.primary)
             

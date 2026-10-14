@@ -122,6 +122,7 @@ struct AgentView: View {
                 viewModel.configure(authProvider: authViewModel)
                 didConfigureViewModel = true
                 LiveActivityPushCoordinator.shared.start()
+                Task { await ContactDirectory.shared.load() }
                 // Load initial windowed events centered on today
                 try? await viewModel.loadWindowedEvents(centerDate: Date())
             }

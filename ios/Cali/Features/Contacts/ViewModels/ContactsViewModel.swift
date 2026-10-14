@@ -33,6 +33,7 @@ final class ContactsViewModel: ObservableObject {
 
         do {
             contacts = try await contactsService.listContacts(accessToken: accessToken)
+            ContactDirectory.shared.update(with: contacts)
             errorMessage = nil
         } catch ContactsServiceError.unauthorized {
             errorMessage = "We couldn't access your account. Please sign in again."

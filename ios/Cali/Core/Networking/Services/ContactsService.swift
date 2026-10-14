@@ -28,6 +28,23 @@ struct ContactRecord: Identifiable, Decodable, Hashable, Sendable {
     let familyName: String?
     let nickname: String?
     let inviteEmail: String?
+    let emails: [String]
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        appleIdentifier = try container.decode(String.self, forKey: .appleIdentifier)
+        displayName = try container.decode(String.self, forKey: .displayName)
+        givenName = try container.decodeIfPresent(String.self, forKey: .givenName)
+        familyName = try container.decodeIfPresent(String.self, forKey: .familyName)
+        nickname = try container.decodeIfPresent(String.self, forKey: .nickname)
+        inviteEmail = try container.decodeIfPresent(String.self, forKey: .inviteEmail)
+        emails = try container.decodeIfPresent([String].self, forKey: .emails) ?? []
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, appleIdentifier, displayName, givenName, familyName, nickname, inviteEmail, emails
+    }
 }
 
 enum ContactsServiceError: Error {
