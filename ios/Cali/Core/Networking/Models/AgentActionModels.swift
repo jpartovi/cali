@@ -41,6 +41,8 @@ struct AgentActionResult {
     let statusCode: Int
     let data: Data
     let agentResponse: AgentResponse
+    /// The backend's id for this agent run (also its LangSmith trace id), sent with feedback
+    var requestId: String? = nil
 
     var responseString: String? {
         String(data: data, encoding: .utf8)

@@ -67,11 +67,19 @@ struct AgentActionService: AgentActionServicing {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let agentResponse = try decoder.decode(AgentResponse.self, from: data)
+            let requestId = (try? decoder.decode(RequestIDEnvelope.self, from: data))?.requestId
 
-            return AgentActionResult(statusCode: statusCode, data: data, agentResponse: agentResponse)
+            return AgentActionResult(statusCode: statusCode, data: data, agentResponse: agentResponse, requestId: requestId)
         } catch {
             throw ServiceError.decodingFailed(underlying: error)
         }
     }
 }
 
+private struct RequestIDEnvelope: Decodable {
+    let requestId: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+    }
+}

@@ -12,7 +12,9 @@ enum AgentModalState {
         actionType: ConfirmationActionType,
         onConfirm: () -> Void,
         onCancel: () -> Void,
-        isLoading: Bool
+        isLoading: Bool,
+        rating: AgentRating? = nil,
+        onRate: ((AgentRating) -> Void)? = nil
     )
     case listening(text: String)
     case thinking(text: String)
@@ -29,6 +31,7 @@ struct AgentModal: View {
     private let verticalPadding: CGFloat = 20
     private let buttonSize: CGFloat = 64
     private let buttonSpacing: CGFloat = 24
+    private let ratingButtonSize: CGFloat = 40
     
     var body: some View {
         if let state = state {
@@ -69,8 +72,19 @@ struct AgentModal: View {
     @ViewBuilder
     private func content(for state: AgentModalState) -> some View {
         switch state {
-        case .confirmation(_, let onConfirm, let onCancel, let isLoading):
-            HStack(spacing: buttonSpacing) {
+        case .confirmation(_, let onConfirm, let onCancel, let isLoading, let rating, let onRate):
+            HStack(spacing: 0) {
+                // Thumbs up over thumbs down on the left; a matching gap on the right keeps accept/reject centered
+                if let onRate {
+                    // Tap areas overlap a little so the icons sit closer together
+                    VStack(spacing: -6) {
+                        ratingButton(.good, selected: rating == .good, onRate: onRate)
+                        ratingButton(.bad, selected: rating == .bad, onRate: onRate)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                HStack(spacing: buttonSpacing) {
                 // Cancel button (left) - circular destructive muted outline with transparent interior
                 Button {
                     onCancel()
@@ -108,7 +122,14 @@ struct AgentModal: View {
                     }
                 }
                 .disabled(isLoading)
+                }
+
+                if onRate != nil {
+                    Spacer(minLength: 0)
+                    Color.clear.frame(width: ratingButtonSize)
+                }
             }
+            .padding(.horizontal, onRate == nil ? 0 : 12)
             .frame(maxWidth: .infinity)
             
         case .listening(let text):
@@ -167,6 +188,25 @@ struct AgentModal: View {
                 .padding(.vertical, verticalPadding)
         }
     }
+
+    /// Thumbs up / down beside accept and reject: rates the agent's result, not the action
+    private func ratingButton(_ value: AgentRating, selected: Bool, onRate: @escaping (AgentRating) -> Void) -> some View {
+        let symbol = value == .good ? "hand.thumbsup" : "hand.thumbsdown"
+        return Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            onRate(value)
+        } label: {
+            Image(systemName: selected ? symbol + ".fill" : symbol)
+                .font(.system(size: 18, weight: .semibold))
+                // Both thumbs highlight in the reject button's gray; the fill is what marks the choice
+                .foregroundStyle(selected ? ColorPalette.Surface.destructiveMuted : ColorPalette.Text.secondary)
+                .frame(width: ratingButtonSize, height: ratingButtonSize)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(value == .good ? "Good result" : "Bad result")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
 }
 
 #Preview {
@@ -180,7 +220,9 @@ struct AgentModal: View {
                     actionType: .createEvent,
                     onConfirm: {},
                     onCancel: {},
-                    isLoading: false
+                    isLoading: false,
+                    rating: .bad,
+                    onRate: { _ in }
                 )
             )
             

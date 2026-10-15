@@ -44,6 +44,12 @@ final class AgentViewModel: ObservableObject {
     @Published var liveTranscript: String = ""
     @Published var noticeMessage: String?
     @Published var errorState: AgentError?
+    /// The most recent agent request and the user's thumbs up/down on it (sent with its trace id)
+    @Published private(set) var lastAgentRun: RatableAgentRun?
+    @Published private(set) var lastAgentRating: AgentRating?
+    @Published private(set) var isSendingRatingNote = false
+    @Published private(set) var didSendRatingNote = false
+    private var ratingSyncTask: Task<Void, Never>?
     
     private var noticeDismissTask: Task<Void, Never>?
     private var errorDismissTask: Task<Void, Never>?
@@ -290,6 +296,11 @@ final class AgentViewModel: ObservableObject {
         )
         let agentDuration = Date().timeIntervalSince(agentStart)
         await timingLogger.logStep("frontend.send_to_agent", duration: agentDuration, details: "response_type=\(result.agentResponse.typeString)")
+        lastAgentRun = result.requestId.map {
+            RatableAgentRun(requestId: $0, query: transcribedText, responseData: result.data)
+        }
+        lastAgentRating = nil
+        didSendRatingNote = false
 
         // Handle response and display UI
         let handleStart = Date()
@@ -1216,7 +1227,7 @@ final class AgentViewModel: ObservableObject {
         self.displayEvents = displayEvents
         self.focusEvent = focus
         hasLoadedSchedule = true
-        
+
         let updateTimeOfDay: Double?
         if let start = updatedStart, case .timed(let dateTime, _) = start.eventTime {
             updateTimeOfDay = timeOfDay(from: dateTime)
@@ -1417,6 +1428,56 @@ final class AgentViewModel: ObservableObject {
         }
     }
     
+    /// Selects a thumbs up/down on the last agent result, or deselects it when it's already chosen
+    /// (removing the saved rating). Shown right away; saves run in tap order so the last tap wins.
+    func toggleLastAgentRating(_ rating: AgentRating) {
+        guard let run = lastAgentRun else { return }
+        let newRating: AgentRating? = lastAgentRating == rating ? nil : rating
+        lastAgentRating = newRating
+        didSendRatingNote = false
+
+        let previousSync = ratingSyncTask
+        ratingSyncTask = Task { @MainActor in
+            await previousSync?.value
+            do {
+                guard let accessToken = await AuthTokenProvider.shared.currentAccessToken() else {
+                    throw AccessTokenError.missingAuthProvider
+                }
+                if let newRating {
+                    try await AgentRatingService().rate(run, rating: newRating, accessToken: accessToken)
+                } else {
+                    try await AgentRatingService().removeRating(for: run, accessToken: accessToken)
+                }
+            } catch {
+                print("Agent rating save failed: \(error)")
+            }
+        }
+    }
+
+    /// Saves an optional note ("what went wrong") with the rating already given.
+    func sendRatingNote(_ text: String) {
+        let note = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let run = lastAgentRun, let rating = lastAgentRating, !note.isEmpty, !isSendingRatingNote else { return }
+        isSendingRatingNote = true
+
+        let previousSync = ratingSyncTask
+        ratingSyncTask = Task { @MainActor in
+            await previousSync?.value
+            defer { isSendingRatingNote = false }
+            do {
+                guard let accessToken = await AuthTokenProvider.shared.currentAccessToken() else {
+                    throw AccessTokenError.missingAuthProvider
+                }
+                try await AgentRatingService().rate(run, rating: rating, note: note, accessToken: accessToken)
+                if lastAgentRun == run {
+                    didSendRatingNote = true
+                }
+            } catch {
+                print("Agent rating note failed: \(error)")
+            }
+        }
+    }
+
     func cancelPendingAction() {
         guard let action = agentAction else { return }
         

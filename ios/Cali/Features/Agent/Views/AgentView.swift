@@ -21,6 +21,7 @@ struct AgentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var isLoading = false
     @State private var didConfigureViewModel = false
+    @State private var ratingNote = ""
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -75,6 +76,20 @@ struct AgentView: View {
             VStack(spacing: 8) { // 4pt gap between modal and microphone container
                 // Unified modal appears above microphone button, overlaying the schedule view
                 // Priority: confirmation > thinking > notice
+                // After a thumbs up/down, an optional note on what went wrong (or right)
+                if showsRatingNote {
+                    TypedPromptBubble(
+                        text: $ratingNote,
+                        isSending: viewModel.isSendingRatingNote,
+                        placeholder: viewModel.lastAgentRating == .bad ? "What went wrong? (optional)" : "Any notes? (optional)",
+                        focusOnAppear: false,
+                        onSend: {
+                            viewModel.sendRatingNote(ratingNote)
+                        }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+
                 if let modalState = agentModalState {
                     AgentModal(state: modalState)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -100,6 +115,14 @@ struct AgentView: View {
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isTypingPrompt)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showsRatingNote)
+        .onChange(of: viewModel.lastAgentRun) { _, _ in
+            ratingNote = ""
+        }
+        .onChange(of: viewModel.lastAgentRating) { _, rating in
+            // Deselecting a thumb discards the note in progress
+            if rating == nil { ratingNote = "" }
+        }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: agentModalState != nil)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selectedEventForDetails != nil)
         .onReceive(viewModel.$displayState) { state in
@@ -168,7 +191,11 @@ struct AgentView: View {
                 onCancel: {
                     viewModel.cancelPendingAction()
                 },
-                isLoading: viewModel.isConfirmingAction
+                isLoading: viewModel.isConfirmingAction,
+                rating: viewModel.lastAgentRating,
+                onRate: viewModel.lastAgentRun == nil ? nil : { rating in
+                    viewModel.toggleLastAgentRating(rating)
+                }
             )
         } else if viewModel.isRecording {
             // Show live transcript while recording (on-device speech recognition)
@@ -182,6 +209,12 @@ struct AgentView: View {
         }
     }
     
+    /// The note bubble shows while a thumb is selected, until its note is sent
+    private var showsRatingNote: Bool {
+        guard case .confirmation = agentModalState else { return false }
+        return viewModel.lastAgentRating != nil && !viewModel.didSendRatingNote && !isTypingPrompt
+    }
+
     private var scheduleModalPadding: CGFloat {
         // Base padding (always present) for microphone button container
         // Container height: 72pt button + 12pt top padding + 12pt bottom padding = 96pt
@@ -191,7 +224,7 @@ struct AgentView: View {
         let modalPadding: CGFloat = agentModalState != nil ? 88 + 8 + 24 : 0 // modal height + gap + buffer
 
         // Additional padding when the typed prompt bubble is open
-        let promptPadding: CGFloat = isTypingPrompt ? 52 + 8 : 0 // bubble height + gap
+        let promptPadding: CGFloat = (isTypingPrompt || showsRatingNote) ? 52 + 8 : 0 // bubble height + gap
 
         return microphonePadding + modalPadding + promptPadding
     }
