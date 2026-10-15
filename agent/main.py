@@ -150,7 +150,7 @@ EXTERNAL TOOLS (terminate agent and show results to user):
 - request_create_event(summary, calendar_id, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, attendee_emails=None): Request to create event. Use start_time/end_time for timed events, or start_date/end_date for all-day events (e.g., birthdays, holidays). Only include description/location if explicitly requested or necessary. attendee_emails invites guests (see GUESTS).
 - request_update_event(event_id, calendar_id, summary=None, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, add_attendee_emails=None, remove_attendee_emails=None): Request to update event. Use start_time/end_time for timed events, or start_date/end_date for all-day events. Only include fields that need updating. Only include description if explicitly requested. add_attendee_emails/remove_attendee_emails change the guest list (see GUESTS).
 - request_delete_event(event_id, calendar_id): Request to delete event
-- do_nothing(reason): Handle unsupported/unclear requests"""
+- do_nothing(reason): Handle unsupported/unclear requests. reason is shown to the user: one short phrase, not first person ("No free time fits on Friday", not "I couldn't find any free time")"""
 
 _CALENDAR_SELECTION_RULES = """CALENDAR SELECTION RULES (for write operations):
 For request_create_event, request_update_event, and request_delete_event:

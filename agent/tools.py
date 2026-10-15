@@ -533,7 +533,8 @@ def do_nothing(reason: str) -> Dict[str, Any]:
     or is not supported.
     
     Args:
-        reason: Explanation of why no action is being taken
+        reason: Shown to the user. One short impersonal phrase, never first person
+            ("No matching event found this week", not "I couldn't find that event")
     
     Returns:
         Dict with type "no-action" and metadata
