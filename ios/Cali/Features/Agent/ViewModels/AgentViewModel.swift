@@ -50,7 +50,9 @@ final class AgentViewModel: ObservableObject {
     @Published private(set) var isSendingRatingNote = false
     @Published private(set) var didSendRatingNote = false
     private var ratingSyncTask: Task<Void, Never>?
-    
+    /// The event a pending update would change, as it is now (fetched in full when the update came in)
+    private var pendingUpdateOriginal: CalendarEvent?
+
     private var noticeDismissTask: Task<Void, Never>?
     private var errorDismissTask: Task<Void, Never>?
     private var isReadyToSyncLiveActivities = false
@@ -88,6 +90,28 @@ final class AgentViewModel: ObservableObject {
             case .deleteEvent(let response):
                 return ScheduleFocusEvent(eventID: response.metadata.event_id, style: .destructive)
             }
+        }
+    }
+
+    /// The event a pending create or update would produce, and for an update the event as it is now
+    struct PendingEventPreview {
+        let event: CalendarEvent
+        let original: CalendarEvent?
+    }
+
+    var pendingEventPreview: PendingEventPreview? {
+        guard let agentAction,
+              let previewID = focusEvent?.eventID,
+              let preview = displayEvents.first(where: { $0.event.id == previewID })?.event else {
+            return nil
+        }
+        switch agentAction {
+        case .createEvent:
+            return PendingEventPreview(event: preview, original: nil)
+        case .updateEvent:
+            return PendingEventPreview(event: preview, original: pendingUpdateOriginal)
+        case .showEvent, .showSchedule, .deleteEvent:
+            return nil
         }
     }
 
@@ -1226,6 +1250,7 @@ final class AgentViewModel: ObservableObject {
         
         self.displayEvents = displayEvents
         self.focusEvent = focus
+        self.pendingUpdateOriginal = originalEvent
         hasLoadedSchedule = true
 
         let updateTimeOfDay: Double?

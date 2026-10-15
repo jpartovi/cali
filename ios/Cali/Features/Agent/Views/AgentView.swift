@@ -52,15 +52,16 @@ struct AgentView: View {
             .ignoresSafeArea(edges: .bottom)
         }
         .overlay(alignment: .top) {
-            if let event = selectedEventForDetails {
-                EventDetailsModal(event: event)
+            if let details = detailsModalContent {
+                EventDetailsModal(event: details.event, original: details.original)
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .onChange(of: selectedEventForDetails) { oldValue, newValue in
             // When an event is selected, fetch full event details to ensure we have attendees, location, etc.
-            if let event = newValue, event.calendarId != nil {
+            // The pending create/update preview isn't on the calendar yet, so there's nothing to fetch
+            if let event = newValue, event.calendarId != nil, event.id != viewModel.pendingEventPreview?.event.id {
                 Task {
                     await fetchFullEventDetails(event: event)
                 }
@@ -124,7 +125,7 @@ struct AgentView: View {
             if rating == nil { ratingNote = "" }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: agentModalState != nil)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selectedEventForDetails != nil)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: detailsModalContent != nil)
         .onReceive(viewModel.$displayState) { state in
             handleDisplayStateChange(state)
             
@@ -209,6 +210,19 @@ struct AgentView: View {
         }
     }
     
+    /// The event the details modal shows: the one the user tapped, otherwise the event a pending
+    /// create/update would produce (with the current event, for an update, so the changes show)
+    private var detailsModalContent: (event: CalendarEvent, original: CalendarEvent?)? {
+        var preview: AgentViewModel.PendingEventPreview?
+        if case .confirmation = agentModalState {
+            preview = viewModel.pendingEventPreview
+        }
+        if let selected = selectedEventForDetails, selected.id != preview?.event.id {
+            return (selected, nil)
+        }
+        return preview.map { ($0.event, $0.original) }
+    }
+
     /// The note bubble shows while a thumb is selected, until its note is sent
     private var showsRatingNote: Bool {
         guard case .confirmation = agentModalState else { return false }
