@@ -18,7 +18,7 @@ enum AgentModalState {
     )
     case listening(text: String)
     case thinking(text: String)
-    case notice(message: String)
+    case notice(message: String, rating: AgentRating? = nil, onRate: ((AgentRating) -> Void)? = nil)
     case error(message: String, context: String)
 }
 
@@ -76,11 +76,7 @@ struct AgentModal: View {
             HStack(spacing: 0) {
                 // Thumbs up over thumbs down on the left; a matching gap on the right keeps accept/reject centered
                 if let onRate {
-                    // Tap areas overlap a little so the icons sit closer together
-                    VStack(spacing: -6) {
-                        ratingButton(.good, selected: rating == .good, onRate: onRate)
-                        ratingButton(.bad, selected: rating == .bad, onRate: onRate)
-                    }
+                    ratingColumn(rating: rating, onRate: onRate)
                     Spacer(minLength: 0)
                 }
 
@@ -165,16 +161,20 @@ struct AgentModal: View {
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, verticalPadding)
             
-        case .notice(let message):
-            Text(message)
-                .font(.system(size: 14, weight: .regular))
-                .foregroundColor(ColorPalette.Text.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, verticalPadding)
+        case .notice(let message, let rating, let onRate):
+            // Up to three lines of 14pt text fit in the bar, so longer reasons aren't cut off
+            if let onRate {
+                ratableMessage(message, lineLimit: 3, rating: rating, onRate: onRate)
+            } else {
+                Text(message)
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(ColorPalette.Text.secondary)
+                    .lineLimit(3)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, horizontalPadding)
+            }
             
         case .error(let message, let context):
             Text("\(context): \(message)")
@@ -189,7 +189,35 @@ struct AgentModal: View {
         }
     }
 
-    /// Thumbs up / down beside accept and reject: rates the agent's result, not the action
+    /// A no-action notice with the same stacked thumbs as the confirmation bar
+    private func ratableMessage(_ text: String, lineLimit: Int, rating: AgentRating?, onRate: @escaping (AgentRating) -> Void) -> some View {
+        HStack(spacing: 8) {
+            ratingColumn(rating: rating, onRate: onRate)
+
+            Text(text)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundColor(ColorPalette.Text.secondary)
+                .lineLimit(lineLimit)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+
+            // Matches the thumbs' width so the message stays centered
+            Color.clear.frame(width: ratingButtonSize)
+        }
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity)
+    }
+
+    /// Thumbs up over thumbs down; tap areas overlap a little so the icons sit closer together
+    private func ratingColumn(rating: AgentRating?, onRate: @escaping (AgentRating) -> Void) -> some View {
+        VStack(spacing: -6) {
+            ratingButton(.good, selected: rating == .good, onRate: onRate)
+            ratingButton(.bad, selected: rating == .bad, onRate: onRate)
+        }
+    }
+
+    /// A thumbs up or down: rates the agent's result, not the action
     private func ratingButton(_ value: AgentRating, selected: Bool, onRate: @escaping (AgentRating) -> Void) -> some View {
         let symbol = value == .good ? "hand.thumbsup" : "hand.thumbsdown"
         return Button {

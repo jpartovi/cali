@@ -194,9 +194,7 @@ struct AgentView: View {
                 },
                 isLoading: viewModel.isConfirmingAction,
                 rating: viewModel.lastAgentRating,
-                onRate: viewModel.lastAgentRun == nil ? nil : { rating in
-                    viewModel.toggleLastAgentRating(rating)
-                }
+                onRate: ratingHandler
             )
         } else if viewModel.isRecording {
             // Show live transcript while recording (on-device speech recognition)
@@ -204,7 +202,7 @@ struct AgentView: View {
         } else if let transcriptionText = viewModel.transcriptionText, !transcriptionText.isEmpty {
             return .thinking(text: transcriptionText)
         } else if let noticeMessage = viewModel.noticeMessage, !noticeMessage.isEmpty {
-            return .notice(message: noticeMessage)
+            return .notice(message: noticeMessage, rating: viewModel.lastAgentRating, onRate: noticeRatingHandler)
         } else {
             return nil
         }
@@ -223,10 +221,28 @@ struct AgentView: View {
         return preview.map { ($0.event, $0.original) }
     }
 
-    /// The note bubble shows while a thumb is selected, until its note is sent
+    /// Selects or deselects a thumb on the last agent result (nil when that run can't be rated, or
+    /// once its feedback note is sent, which takes the thumbs away)
+    private var ratingHandler: ((AgentRating) -> Void)? {
+        guard viewModel.lastAgentRun != nil, !viewModel.didSendRatingNote else { return nil }
+        return { rating in viewModel.toggleLastAgentRating(rating) }
+    }
+
+    /// Thumbs on a notice only when it's the last run's no-action response
+    private var noticeRatingHandler: ((AgentRating) -> Void)? {
+        guard let runId = viewModel.ratableMessageRunId, runId == viewModel.lastAgentRun?.requestId else { return nil }
+        return ratingHandler
+    }
+
+    /// The note bubble shows while a thumb is selected on a rateable bar, until its note is sent
     private var showsRatingNote: Bool {
-        guard case .confirmation = agentModalState else { return false }
-        return viewModel.lastAgentRating != nil && !viewModel.didSendRatingNote && !isTypingPrompt
+        guard viewModel.lastAgentRating != nil, !viewModel.didSendRatingNote, !isTypingPrompt else { return false }
+        switch agentModalState {
+        case .confirmation, .notice(_, _, .some):
+            return true
+        default:
+            return false
+        }
     }
 
     private var scheduleModalPadding: CGFloat {

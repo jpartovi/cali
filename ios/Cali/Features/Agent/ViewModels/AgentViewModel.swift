@@ -50,6 +50,8 @@ final class AgentViewModel: ObservableObject {
     @Published private(set) var isSendingRatingNote = false
     @Published private(set) var didSendRatingNote = false
     private var ratingSyncTask: Task<Void, Never>?
+    /// The run whose no-action notice is on screen, so that notice can be rated too
+    @Published private(set) var ratableMessageRunId: String?
     /// The event a pending update would change, as it is now (fetched in full when the update came in)
     private var pendingUpdateOriginal: CalendarEvent?
 
@@ -206,6 +208,7 @@ final class AgentViewModel: ObservableObject {
         noticeMessage = nil // Clear previous notice when starting new recording
         errorState = nil // Clear any previous errors when starting new recording
         errorDismissTask?.cancel() // Cancel any pending error dismiss task
+        ratableMessageRunId = nil
 
         Task { @MainActor in
             do {
@@ -291,6 +294,7 @@ final class AgentViewModel: ObservableObject {
 
         let flowStart = Date()
         errorState = nil
+        ratableMessageRunId = nil
         transcriptionText = query
         displayState = .uploading
 
@@ -344,6 +348,7 @@ final class AgentViewModel: ObservableObject {
         // Set notice message for no-action responses (after clearing transcription)
         switch result.agentResponse {
         case .noAction(let response):
+            ratableMessageRunId = lastAgentRun?.requestId
             setNoticeMessage(response.metadata.reason)
         case .error(let error):
             // Handle agent error - this is an agent mistake, not a user error
@@ -387,12 +392,18 @@ final class AgentViewModel: ObservableObject {
         
         // Set the notice message
         noticeMessage = message
-        
-        // Schedule automatic dismissal after 2 seconds
+        scheduleNoticeAutoDismiss()
+    }
+
+    /// Notices go away after 2 seconds, or 6 when they can be rated (to leave time to tap a thumb)
+    private func scheduleNoticeAutoDismiss() {
+        noticeDismissTask?.cancel()
+        let seconds: UInt64 = ratableMessageRunId == nil ? 2 : 6
         noticeDismissTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
+            try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
             if !Task.isCancelled {
                 noticeMessage = nil
+                ratableMessageRunId = nil
             }
         }
     }
@@ -555,6 +566,7 @@ final class AgentViewModel: ObservableObject {
         displayState = .failed(message: errorMessage)
         // Only set notice if no error state is present
         if errorState == nil {
+            ratableMessageRunId = nil
             setNoticeMessage(errorMessage)
         }
         isRecording = false
@@ -706,6 +718,7 @@ final class AgentViewModel: ObservableObject {
     private func handleAgentError(_ error: Error, context: String = "Agent processing") {
         let errorState = categorizeError(error, context: context)
         self.errorState = errorState
+        ratableMessageRunId = nil
         displayState = .failed(message: errorState.message)
         // Clear transcription/notice when showing error
         transcriptionText = nil
@@ -723,6 +736,7 @@ final class AgentViewModel: ObservableObject {
         }
         let errorState = categorizeError(error, context: context)
         self.errorState = errorState
+        ratableMessageRunId = nil
         // Don't set displayState to failed for calendar action errors
         // Error modal will be shown via errorState
         // Auto-dismiss error after 4 seconds
@@ -822,6 +836,7 @@ final class AgentViewModel: ObservableObject {
             let actionDuration = Date().timeIntervalSince(actionStart)
             await timingLogger.logStep("frontend.handle_response.create_event", duration: actionDuration)
         case .noAction(let response):
+            ratableMessageRunId = lastAgentRun?.requestId
             setNoticeMessage(response.metadata.reason)
         case .error(let error):
             // Handle agent error - this is an agent mistake, not a user error
@@ -1460,6 +1475,7 @@ final class AgentViewModel: ObservableObject {
         let newRating: AgentRating? = lastAgentRating == rating ? nil : rating
         lastAgentRating = newRating
         didSendRatingNote = false
+        holdRatableMessage(newRating != nil)
 
         let previousSync = ratingSyncTask
         ratingSyncTask = Task { @MainActor in
@@ -1476,6 +1492,17 @@ final class AgentViewModel: ObservableObject {
             } catch {
                 print("Agent rating save failed: \(error)")
             }
+        }
+    }
+
+    /// Keeps a rated no-action notice on screen while its thumb is selected (and the note box is open);
+    /// otherwise lets it dismiss itself as usual
+    private func holdRatableMessage(_ hold: Bool) {
+        guard ratableMessageRunId != nil, ratableMessageRunId == lastAgentRun?.requestId, noticeMessage != nil else { return }
+        if hold {
+            noticeDismissTask?.cancel()
+        } else {
+            scheduleNoticeAutoDismiss()
         }
     }
 
@@ -1496,6 +1523,7 @@ final class AgentViewModel: ObservableObject {
                 try await AgentRatingService().rate(run, rating: rating, note: note, accessToken: accessToken)
                 if lastAgentRun == run {
                     didSendRatingNote = true
+                    holdRatableMessage(false)
                 }
             } catch {
                 print("Agent rating note failed: \(error)")
