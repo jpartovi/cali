@@ -977,20 +977,21 @@ struct SwipeableScheduleView: View {
         columnIndex: Int,
         dayColumnWidth: CGFloat
     ) -> (width: CGFloat, offsetX: CGFloat) {
+        // Lay out within the same inset span a lone event uses, so overlapping events never
+        // extend past the margins of the day column.
+        let leftMargin = horizontalEventInset / 2
+        let availableWidth = dayColumnWidth - horizontalEventInset
         if columnCount == 1 {
-            let width = dayColumnWidth - horizontalEventInset
-            return (width, horizontalEventInset / 2)
+            return (availableWidth, leftMargin)
         }
-        let baseColumnWidth = dayColumnWidth / CGFloat(columnCount)
+        let baseColumnWidth = availableWidth / CGFloat(columnCount)
         var overlapFraction = overlapFractionHorizontal
         if baseColumnWidth < minimumBaseColumnWidth {
             overlapFraction = overlapFractionHorizontal * max(0, baseColumnWidth / minimumBaseColumnWidth)
         }
-        let width = baseColumnWidth * (1.0 + overlapFraction)
+        let width = min(availableWidth, baseColumnWidth * (1.0 + overlapFraction))
         let tentativeLeft = baseColumnWidth * CGFloat(columnIndex)
-        let maxRight = dayColumnWidth - horizontalEventInset
-        let maxLeft = maxRight - width
-        let offsetX = min(tentativeLeft, max(0, maxLeft))
+        let offsetX = leftMargin + min(tentativeLeft, availableWidth - width)
         return (width, offsetX)
     }
     
