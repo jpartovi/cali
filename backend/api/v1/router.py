@@ -12,6 +12,7 @@ from .webhooks import router as webhooks_router
 from .calendar_listener import router as calendar_listener_router
 from .live_activities import router as live_activities_router
 from .contacts import router as contacts_router
+from .agent_ratings import router as agent_ratings_router
 
 router = APIRouter()
 
@@ -23,3 +24,4 @@ router.include_router(webhooks_router)
 router.include_router(calendar_listener_router)
 router.include_router(live_activities_router)
 router.include_router(contacts_router)
+router.include_router(agent_ratings_router)

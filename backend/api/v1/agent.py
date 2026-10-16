@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -218,7 +219,7 @@ def _writable_calendars(user_id: str) -> list:
     ]
 
 
-async def _run_remote_agent(settings, input_state: dict, user_id: str) -> dict:
+async def _run_remote_agent(settings, input_state: dict, user_id: str, metadata: dict) -> dict:
     """Run the agent on the LangGraph server at LANGGRAPH_AGENT_URL (AGENT_IN_PROCESS=false)."""
     is_local_agent = urlparse(settings.langgraph_agent_url).hostname in {"localhost", "127.0.0.1"}
     api_key = settings.langsmith_api_key or settings.langgraph_api_key
@@ -235,6 +236,7 @@ async def _run_remote_agent(settings, input_state: dict, user_id: str) -> dict:
         assistant_id="agent",
         input=input_state,
         config={"recursion_limit": RECURSION_LIMIT},
+        metadata=metadata,
     )
 
 
@@ -324,7 +326,9 @@ async def agent_action(
     """
     endpoint_start = time.time()
     query_text = body.query
-    log_start("backend.api.action", details=f"user_id={current_user.id} query_length={len(query_text)}")
+    # Returned with every response and used as the LangSmith trace id, so a flagged result maps to its trajectory
+    request_id = uuid.uuid4()
+    log_start("backend.api.action", details=f"user_id={current_user.id} request_id={request_id} query_length={len(query_text)}")
     try:
         # Extract Supabase access token from Authorization header
         auth_header = request.headers.get("Authorization")
@@ -395,15 +399,21 @@ async def agent_action(
         }
 
         logger.info(
-            f"Invoking agent user_id={current_user.id} query_length={len(query_text)}"
+            f"Invoking agent user_id={current_user.id} request_id={request_id} query_length={len(query_text)}"
         )
+        trace_metadata = {
+            "user_id": current_user.id,
+            "request_id": str(request_id),
+            "request_kind": request_kind,
+            "query": query_text,
+        }
 
         # Invoke and wait for completion
         langgraph_start = time.time()
         if settings.agent_in_process:
-            result = await run_agent(input_state)
+            result = await run_agent(input_state, run_id=request_id, metadata=trace_metadata)
         else:
-            result = await _run_remote_agent(settings, input_state, current_user.id)
+            result = await _run_remote_agent(settings, input_state, current_user.id, trace_metadata)
         langgraph_duration = time.time() - langgraph_start
         log_step("backend.api.action.langgraph_invoke", langgraph_duration, details=f"response_type={result.get('type')}")
 
@@ -422,7 +432,7 @@ async def agent_action(
                 log_step("backend.api.action.parse_response", parse_duration, details="result=error")
                 endpoint_duration = time.time() - endpoint_start
                 log_step("backend.api.action", endpoint_duration)
-                return error_response.model_dump()
+                return {**error_response.model_dump(), "request_id": str(request_id)}
             elif "type" in result:
                 # Success response - parse based on type
                 response_type = result.get("type")
@@ -449,12 +459,12 @@ async def agent_action(
                     log_step("backend.api.action.parse_response", parse_duration, details=f"result=unknown_type type={response_type}")
                     endpoint_duration = time.time() - endpoint_start
                     log_step("backend.api.action", endpoint_duration)
-                    return error_response.model_dump()
+                    return {**error_response.model_dump(), "request_id": str(request_id)}
                 parse_duration = time.time() - parse_start
                 log_step("backend.api.action.parse_response", parse_duration, details=f"result=success type={response_type}")
                 endpoint_duration = time.time() - endpoint_start
                 log_step("backend.api.action", endpoint_duration)
-                return response.model_dump()
+                return {**response.model_dump(), "request_id": str(request_id)}
             else:
                 # Fallback for unexpected responses - treat as error
                 # This is an agent mistake, not a user error
@@ -471,7 +481,7 @@ async def agent_action(
                 log_step("backend.api.action.parse_response", parse_duration, details="result=unexpected_format")
                 endpoint_duration = time.time() - endpoint_start
                 log_step("backend.api.action", endpoint_duration)
-                return error_response.model_dump()
+                return {**error_response.model_dump(), "request_id": str(request_id)}
         except ValidationError as e:
             # This is an agent mistake (invalid response format), not a user error
             # Log full details for debugging (verbose internal logging)
@@ -485,7 +495,7 @@ async def agent_action(
             )
             endpoint_duration = time.time() - endpoint_start
             log_step("backend.api.action", endpoint_duration, details="result=validation_error")
-            return error_response.model_dump()
+            return {**error_response.model_dump(), "request_id": str(request_id)}
 
     except HTTPException:
         endpoint_duration = time.time() - endpoint_start

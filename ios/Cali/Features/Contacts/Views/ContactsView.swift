@@ -46,6 +46,8 @@ struct ContactsView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 40)
         } else {
+            syncButton
+
             if viewModel.contacts.isEmpty == false {
                 contactsList
             } else if viewModel.isSyncing == false {
@@ -54,9 +56,6 @@ struct ContactsView: View {
                     .foregroundStyle(ColorPalette.Text.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            syncButton
-                .padding(.top, 4)
         }
     }
 

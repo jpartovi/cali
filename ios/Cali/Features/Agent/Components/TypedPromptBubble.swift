@@ -5,10 +5,12 @@
 
 import SwiftUI
 
-/// Text bubble for typing a prompt to the agent instead of dictating it.
+/// Text bubble for typing a prompt to the agent instead of dictating it (also used for rating notes).
 struct TypedPromptBubble: View {
     @Binding var text: String
     let isSending: Bool
+    var placeholder = "Ask Cali…"
+    var focusOnAppear = true
     let onSend: () -> Void
 
     @FocusState private var isFocused: Bool
@@ -23,7 +25,7 @@ struct TypedPromptBubble: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField("Ask Cali…", text: $text, axis: .vertical)
+            TextField(placeholder, text: $text, axis: .vertical)
                 .font(.system(size: 16, weight: .regular))
                 .foregroundStyle(ColorPalette.Text.primary)
                 .lineLimit(1...4)
@@ -53,7 +55,7 @@ struct TypedPromptBubble: View {
             }
             .buttonStyle(.plain)
             .disabled(!canSend)
-            .accessibilityLabel("Send prompt")
+            .accessibilityLabel("Send")
         }
         .padding(.leading, 18)
         .padding(.trailing, 8)
@@ -61,7 +63,7 @@ struct TypedPromptBubble: View {
         .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
         .shadow(color: Color.black.opacity(0.1), radius: 12, x: 0, y: 4)
         .padding(.horizontal, horizontalPadding)
-        .onAppear { isFocused = true }
+        .onAppear { isFocused = focusOnAppear }
     }
 
     private func send() {

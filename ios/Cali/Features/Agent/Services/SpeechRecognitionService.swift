@@ -82,24 +82,9 @@ final class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognit
             if #available(iOS 13.0, *) {
                 try session.setAllowHapticsAndSystemSoundsDuringRecording(true)
             }
+            // Configuring the category doesn't touch other apps' audio. The session is only
+            // activated when recording starts, so opening the app never stops the user's music.
             hasPrewarmed = true
-
-            // Activate session if permissions are granted
-            Task { @MainActor in
-                guard !isSessionActive,
-                      isMicPermissionGranted == true,
-                      isSpeechPermissionGranted == true else { return }
-                do {
-                    #if targetEnvironment(simulator)
-                    try? session.setActive(true, options: .notifyOthersOnDeactivation)
-                    #else
-                    try session.setActive(true, options: .notifyOthersOnDeactivation)
-                    #endif
-                    isSessionActive = true
-                } catch {
-                    // Silently fail — will retry during actual recording start
-                }
-            }
         } catch {
             // Silently fail — will retry during actual recording start
         }
@@ -213,6 +198,7 @@ final class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognit
         // If we already have a final transcript, return it immediately
         if let final = finalTranscript {
             cancelRecognitionTask()
+            deactivateSession()
             return final
         }
 
@@ -230,6 +216,7 @@ final class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognit
         }
 
         cancelRecognitionTask()
+        deactivateSession()
         return transcript
     }
 
@@ -245,7 +232,11 @@ final class SpeechRecognitionService: NSObject, ObservableObject, SpeechRecognit
         audioEngine = nil
         recognitionRequest = nil
         cancelRecognitionTask()
+        deactivateSession()
+    }
 
+    /// Releases the audio session so other apps' audio (e.g. music) resumes.
+    private func deactivateSession() {
         guard isSessionActive else { return }
         let session = AVAudioSession.sharedInstance()
         #if targetEnvironment(simulator)

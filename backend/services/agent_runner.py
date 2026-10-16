@@ -18,7 +18,8 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
+from uuid import UUID
 
 # Tool calls go to this process directly rather than out through the public BACKEND_URL
 os.environ.setdefault("AGENT_BACKEND_URL", f"http://127.0.0.1:{os.getenv('PORT', '8000')}")
@@ -59,9 +60,14 @@ def relative_dates_sheet(now: datetime, timezone_name: str) -> str:
     return re.sub(r" \(\d{4}-\d\d-\d\dT[^)]*\)", "", generate_time_reference(now, timezone_name))
 
 
-async def run_agent(input_state: Dict[str, Any]) -> Dict[str, Any]:
-    """Run one stateless agent request and return the graph's output state."""
-    return await get_agent_graph().ainvoke(
-        input_state,
-        config={"recursion_limit": RECURSION_LIMIT, "run_name": "agent"},
-    )
+async def run_agent(
+    input_state: Dict[str, Any], run_id: Optional[UUID] = None, metadata: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Run one stateless agent request and return the graph's output state.
+
+    run_id becomes the LangSmith trace's id, so a request_id the app reports opens its trace directly.
+    """
+    config: Dict[str, Any] = {"recursion_limit": RECURSION_LIMIT, "run_name": "agent", "metadata": metadata or {}}
+    if run_id is not None:
+        config["run_id"] = run_id
+    return await get_agent_graph().ainvoke(input_state, config=config)

@@ -35,7 +35,6 @@ final class AgentAudioRecorder: NSObject, ObservableObject {
     private var hasPrewarmed = false
     private var isPermissionGranted: Bool?
     private var isSessionActive = false
-    private var hasPrimedRecorder = false // Track if AVAudioRecorder infrastructure is primed
 
     func startRecording() async throws {
         guard case .idle = state else { return }
@@ -113,9 +112,9 @@ final class AgentAudioRecorder: NSObject, ObservableObject {
         // This reduces "Abandoning I/O cycle because reconfig pending" warnings
         try? await Task.sleep(nanoseconds: 50_000_000) // 50ms delay
 
-        // Note: We don't deactivate the session here to keep it warm for next recording
-        // The session will be deactivated when the view disappears or in deinit
-        
+        // Release the session so other apps' audio (e.g. music) resumes
+        cleanup()
+
         let recordedURL = activeRecordingURL
         audioRecorder = nil
         activeRecordingURL = nil
@@ -143,8 +142,7 @@ final class AgentAudioRecorder: NSObject, ObservableObject {
 extension AgentAudioRecorder: AVAudioRecorderDelegate {}
 
 extension AgentAudioRecorder {
-    /// Pre-warms the audio session by configuring category/mode, checking permissions, activating the session,
-    /// and priming the AVAudioRecorder infrastructure. This eliminates initialization delay when recording starts.
+    /// Pre-warms the audio session by configuring category/mode and checking permissions.
     /// Safe to call multiple times.
     @MainActor
     func prewarm() {
@@ -165,52 +163,9 @@ extension AgentAudioRecorder {
                 try session.setAllowHapticsAndSystemSoundsDuringRecording(true)
             }
             
+            // Configuring the category doesn't touch other apps' audio. The session is only
+            // activated when recording starts, so opening the app never stops the user's music.
             hasPrewarmed = true
-            
-            // Activate the session asynchronously in the background
-            // This is the slow part on first use, so doing it early means it's ready when user taps mic
-            Task { @MainActor in
-                // Only activate if not already active and permission is granted
-                if !isSessionActive, isPermissionGranted == true {
-                    do {
-                        #if targetEnvironment(simulator)
-                        try? session.setActive(true, options: .notifyOthersOnDeactivation)
-                        #else
-                        try session.setActive(true, options: .notifyOthersOnDeactivation)
-                        #endif
-                        isSessionActive = true
-                        
-                        // Prime AVAudioRecorder infrastructure by creating and preparing a dummy instance
-                        // This initializes iOS's audio codecs and hardware pipeline, eliminating the 2+ second
-                        // delay on first real recorder creation. The dummy instance is discarded after priming.
-                        if !hasPrimedRecorder {
-                            let dummyURL = FileManager.default.temporaryDirectory
-                                .appendingPathComponent("dummy_prewarm_\(UUID().uuidString)")
-                                .appendingPathExtension("wav")
-                            
-                            let dummySettings: [String: Any] = [
-                                AVFormatIDKey: kAudioFormatLinearPCM,
-                                AVSampleRateKey: 16_000,
-                                AVNumberOfChannelsKey: 1,
-                                AVLinearPCMBitDepthKey: 16,
-                                AVLinearPCMIsFloatKey: false,
-                                AVLinearPCMIsBigEndianKey: false
-                            ]
-                            
-                            // Create and prepare the dummy recorder to prime the infrastructure
-                            if let dummy = try? AVAudioRecorder(url: dummyURL, settings: dummySettings) {
-                                dummy.prepareToRecord()
-                                hasPrimedRecorder = true
-                                // Clean up dummy file if it was created
-                                try? FileManager.default.removeItem(at: dummyURL)
-                            }
-                        }
-                    } catch {
-                        // Silently fail - will retry during actual recording start
-                        // This prevents pre-warming from causing issues
-                    }
-                }
-            }
         } catch {
             // Silently fail - will retry during actual recording start
             // This prevents pre-warming from causing issues if called too early

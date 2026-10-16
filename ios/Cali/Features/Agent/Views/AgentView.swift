@@ -21,6 +21,7 @@ struct AgentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var isLoading = false
     @State private var didConfigureViewModel = false
+    @State private var ratingNote = ""
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -51,15 +52,16 @@ struct AgentView: View {
             .ignoresSafeArea(edges: .bottom)
         }
         .overlay(alignment: .top) {
-            if let event = selectedEventForDetails {
-                EventDetailsModal(event: event)
+            if let details = detailsModalContent {
+                EventDetailsModal(event: details.event, original: details.original)
                     .padding(.top, 8)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .onChange(of: selectedEventForDetails) { oldValue, newValue in
             // When an event is selected, fetch full event details to ensure we have attendees, location, etc.
-            if let event = newValue, event.calendarId != nil {
+            // The pending create/update preview isn't on the calendar yet, so there's nothing to fetch
+            if let event = newValue, event.calendarId != nil, event.id != viewModel.pendingEventPreview?.event.id {
                 Task {
                     await fetchFullEventDetails(event: event)
                 }
@@ -75,6 +77,20 @@ struct AgentView: View {
             VStack(spacing: 8) { // 4pt gap between modal and microphone container
                 // Unified modal appears above microphone button, overlaying the schedule view
                 // Priority: confirmation > thinking > notice
+                // After a thumbs up/down, an optional note on what went wrong (or right)
+                if showsRatingNote {
+                    TypedPromptBubble(
+                        text: $ratingNote,
+                        isSending: viewModel.isSendingRatingNote,
+                        placeholder: viewModel.lastAgentRating == .bad ? "What went wrong? (optional)" : "Any notes? (optional)",
+                        focusOnAppear: false,
+                        onSend: {
+                            viewModel.sendRatingNote(ratingNote)
+                        }
+                    )
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+
                 if let modalState = agentModalState {
                     AgentModal(state: modalState)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -100,8 +116,16 @@ struct AgentView: View {
             }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isTypingPrompt)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showsRatingNote)
+        .onChange(of: viewModel.lastAgentRun) { _, _ in
+            ratingNote = ""
+        }
+        .onChange(of: viewModel.lastAgentRating) { _, rating in
+            // Deselecting a thumb discards the note in progress
+            if rating == nil { ratingNote = "" }
+        }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: agentModalState != nil)
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: selectedEventForDetails != nil)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: detailsModalContent != nil)
         .onReceive(viewModel.$displayState) { state in
             handleDisplayStateChange(state)
             
@@ -168,7 +192,9 @@ struct AgentView: View {
                 onCancel: {
                     viewModel.cancelPendingAction()
                 },
-                isLoading: viewModel.isConfirmingAction
+                isLoading: viewModel.isConfirmingAction,
+                rating: viewModel.lastAgentRating,
+                onRate: ratingHandler
             )
         } else if viewModel.isRecording {
             // Show live transcript while recording (on-device speech recognition)
@@ -176,12 +202,49 @@ struct AgentView: View {
         } else if let transcriptionText = viewModel.transcriptionText, !transcriptionText.isEmpty {
             return .thinking(text: transcriptionText)
         } else if let noticeMessage = viewModel.noticeMessage, !noticeMessage.isEmpty {
-            return .notice(message: noticeMessage)
+            return .notice(message: noticeMessage, rating: viewModel.lastAgentRating, onRate: noticeRatingHandler)
         } else {
             return nil
         }
     }
     
+    /// The event the details modal shows: the one the user tapped, otherwise the event a pending
+    /// create/update would produce (with the current event, for an update, so the changes show)
+    private var detailsModalContent: (event: CalendarEvent, original: CalendarEvent?)? {
+        var preview: AgentViewModel.PendingEventPreview?
+        if case .confirmation = agentModalState {
+            preview = viewModel.pendingEventPreview
+        }
+        if let selected = selectedEventForDetails, selected.id != preview?.event.id {
+            return (selected, nil)
+        }
+        return preview.map { ($0.event, $0.original) }
+    }
+
+    /// Selects or deselects a thumb on the last agent result (nil when that run can't be rated, or
+    /// once its feedback note is sent, which takes the thumbs away)
+    private var ratingHandler: ((AgentRating) -> Void)? {
+        guard viewModel.lastAgentRun != nil, !viewModel.didSendRatingNote else { return nil }
+        return { rating in viewModel.toggleLastAgentRating(rating) }
+    }
+
+    /// Thumbs on a notice only when it's the last run's no-action response
+    private var noticeRatingHandler: ((AgentRating) -> Void)? {
+        guard let runId = viewModel.ratableMessageRunId, runId == viewModel.lastAgentRun?.requestId else { return nil }
+        return ratingHandler
+    }
+
+    /// The note bubble shows while a thumb is selected on a rateable bar, until its note is sent
+    private var showsRatingNote: Bool {
+        guard viewModel.lastAgentRating != nil, !viewModel.didSendRatingNote, !isTypingPrompt else { return false }
+        switch agentModalState {
+        case .confirmation, .notice(_, _, .some):
+            return true
+        default:
+            return false
+        }
+    }
+
     private var scheduleModalPadding: CGFloat {
         // Base padding (always present) for microphone button container
         // Container height: 72pt button + 12pt top padding + 12pt bottom padding = 96pt
@@ -191,7 +254,7 @@ struct AgentView: View {
         let modalPadding: CGFloat = agentModalState != nil ? 88 + 8 + 24 : 0 // modal height + gap + buffer
 
         // Additional padding when the typed prompt bubble is open
-        let promptPadding: CGFloat = isTypingPrompt ? 52 + 8 : 0 // bubble height + gap
+        let promptPadding: CGFloat = (isTypingPrompt || showsRatingNote) ? 52 + 8 : 0 // bubble height + gap
 
         return microphonePadding + modalPadding + promptPadding
     }
