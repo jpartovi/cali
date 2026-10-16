@@ -9,9 +9,12 @@ import Foundation
 
 struct AgentActionRequest {
     let query: String
-    
-    init(query: String) {
+    /// request_id of the proposal still on screen when this query changes it (a follow-up)
+    let followUpOf: String?
+
+    init(query: String, followUpOf: String? = nil) {
         self.query = query
+        self.followUpOf = followUpOf
     }
 }
 

@@ -28,7 +28,7 @@ from core.dependencies import get_current_user, get_user_timezone
 from core.config import get_settings
 from core.timing_logger import log_step, log_start
 from domains.transcription.service import TranscriptionService
-from services import agent_calendar_service
+from services import agent_calendar_service, agent_conversations
 from services.agent_runner import RECURSION_LIMIT, run_agent
 
 logger = logging.getLogger(__name__)
@@ -243,6 +243,12 @@ async def _run_remote_agent(settings, input_state: dict, user_id: str, metadata:
 class AgentActionRequest(BaseModel):
     """Request model for agent action endpoint."""
     query: str
+    # request_id of a proposal still on screen: the query continues that conversation
+    follow_up_of: Optional[str] = None
+
+
+# Responses the user still has to accept, which a follow-up can change
+PROPOSAL_TYPES = ("create-event", "update-event", "delete-event")
 
 
 @router.post("/transcribe")
@@ -367,6 +373,14 @@ async def agent_action(
         current_time_str = current_user_time.isoformat()
         current_day_of_week = current_user_time.strftime("%A")  # Full day name
 
+        conversation = None
+        if body.follow_up_of:
+            conversation = agent_conversations.get_conversation(body.follow_up_of, current_user.id)
+            if conversation is None:
+                logger.info(f"Follow-up of unknown or expired request user_id={current_user.id} follow_up_of={body.follow_up_of}")
+                error_response = ErrorResponse(message="That suggestion expired. Please ask again.", query=query_text)
+                return {**error_response.model_dump(), "request_id": str(request_id)}
+
         # The calendar list (a database read) runs while Jev classifies the request; the people
         # pre-pass doesn't need the kind, so it runs alongside both stages
         calendars_task = asyncio.create_task(asyncio.to_thread(_writable_calendars, current_user.id))
@@ -375,6 +389,10 @@ async def agent_action(
         prepass_event = await _find_prepass_event(current_user.id, query_text, request_kind, user_timezone)
         prepass_time = await _find_prepass_time(current_user.id, query_text, request_kind, user_timezone)
         prepass_people = await people_task  # Never raises: failures come back as None
+        # The kinds of request the prompt covers: a follow-up may change its proposal or ask for something else
+        prompt_kinds = [request_kind] if request_kind else None
+        if conversation:
+            prompt_kinds = conversation.prompt_kinds and list(dict.fromkeys([*conversation.prompt_kinds, *(prompt_kinds or [])]))
         try:
             auth["writable_calendars"] = await calendars_task
         except Exception as e:
@@ -382,6 +400,9 @@ async def agent_action(
 
         input_state = {
             "query": query_text,
+            "history": conversation.messages if conversation else None,
+            "prompt_kinds": prompt_kinds,
+            "history_people": conversation.prepass_people if conversation else None,
             "auth": auth,
             "request_kind": request_kind,
             "prepass_event": prepass_event,
@@ -406,6 +427,7 @@ async def agent_action(
             "request_id": str(request_id),
             "request_kind": request_kind,
             "query": query_text,
+            "follow_up_of": body.follow_up_of,
         }
 
         # Invoke and wait for completion
@@ -413,7 +435,23 @@ async def agent_action(
         if settings.agent_in_process:
             result = await run_agent(input_state, run_id=request_id, metadata=trace_metadata)
         else:
+            if conversation:
+                # The remote graph only gets JSON, not the LangChain messages a follow-up continues
+                raise HTTPException(status_code=400, detail="Follow-up requests need the in-process agent.")
             result = await _run_remote_agent(settings, input_state, current_user.id, trace_metadata)
+        messages = result.pop("messages", None)
+        if messages and result.get("type") in PROPOSAL_TYPES:
+            agent_conversations.save_conversation(
+                str(request_id),
+                agent_conversations.AgentConversation(
+                    user_id=current_user.id,
+                    messages=messages,
+                    prompt_kinds=prompt_kinds,
+                    prepass_people=agent_conversations.merge_prepass_people(
+                        conversation.prepass_people if conversation else None, prepass_people
+                    ),
+                ),
+            )
         langgraph_duration = time.time() - langgraph_start
         log_step("backend.api.action.langgraph_invoke", langgraph_duration, details=f"response_type={result.get('type')}")
 

@@ -124,6 +124,14 @@ enum AgentResponse: Codable, Sendable {
         case .error: return "error"
         }
     }
+
+    /// A change the user accepts or rejects (check or x), which a follow-up prompt can revise
+    var isProposal: Bool {
+        switch self {
+        case .createEvent, .updateEvent, .deleteEvent: return true
+        case .showEvent, .showSchedule, .noAction, .error: return false
+        }
+    }
 }
 
 struct ShowEventResponse: AgentSuccessResponse, Codable {

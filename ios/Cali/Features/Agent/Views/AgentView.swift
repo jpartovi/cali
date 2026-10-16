@@ -100,6 +100,8 @@ struct AgentView: View {
                     TypedPromptBubble(
                         text: $typedPrompt,
                         isSending: isLoading,
+                        // With a proposal on screen, the prompt changes it
+                        placeholder: viewModel.agentAction?.requiresConfirmation == true ? "Follow up…" : "Ask Cali…",
                         onSend: sendTypedPrompt
                     )
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
@@ -201,7 +203,8 @@ struct AgentView: View {
         } else if let agentAction = viewModel.agentAction,
            agentAction.requiresConfirmation,
            viewModel.hasLoadedSchedule,
-           viewModel.transcriptionText == nil {
+           viewModel.transcriptionText == nil,
+           !viewModel.isRecording, !isLoading { // Hidden while a follow-up to it is being recorded or sent
             return .confirmation(
                 actionType: actionType(for: agentAction),
                 onConfirm: {

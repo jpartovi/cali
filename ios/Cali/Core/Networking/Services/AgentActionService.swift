@@ -29,7 +29,10 @@ struct AgentActionService: AgentActionServicing {
         urlRequest.addValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let requestBody = ["query": request.query]
+        var requestBody = ["query": request.query]
+        if let followUpOf = request.followUpOf {
+            requestBody["follow_up_of"] = followUpOf
+        }
         let encoder = JSONEncoder()
         urlRequest.httpBody = try encoder.encode(requestBody)
 

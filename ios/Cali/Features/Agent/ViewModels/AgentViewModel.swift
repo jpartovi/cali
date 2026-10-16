@@ -54,6 +54,8 @@ final class AgentViewModel: ObservableObject {
     @Published private(set) var ratableMessageRunId: String?
     /// The event a pending update would change, as it is now (fetched in full when the update came in)
     private var pendingUpdateOriginal: CalendarEvent?
+    /// request_id of the agent run behind the proposal on screen (a follow-up continues that run)
+    private var proposalRequestId: String?
     /// A guest of the confirmed event whose contact has no email, while the user is asked for one
     @Published private(set) var guestNeedingEmail: GuestNeedingEmail?
     @Published private(set) var isSavingGuestEmail = false
@@ -324,17 +326,35 @@ final class AgentViewModel: ObservableObject {
     private func runAgentQuery(_ transcribedText: String, accessToken: String?, flowStart: Date) async throws {
         let startingToken = try await resolveAccessToken(initial: accessToken)
 
+        // A prompt sent while a proposal waits for check or x is a follow-up that changes it ("add Henry too").
+        // The proposal stays on screen until the agent answers with its replacement.
+        let proposal = agentAction?.requiresConfirmation == true ? agentAction : nil
+        let followUpOf = proposal == nil ? nil : proposalRequestId
+
         // Clear any existing highlights, notices, or confirmations from previous agent action state
-        agentAction = nil
-        focusEvent = nil
+        if proposal == nil {
+            agentAction = nil
+            focusEvent = nil
+        }
         noticeMessage = nil
 
         // Send to agent
         let agentStart = Date()
         let (result, tokenUsed) = try await sendToAgent(
             query: transcribedText,
+            followUpOf: followUpOf,
             accessToken: startingToken
         )
+        if let proposal {
+            // An error leaves the proposal as it was; anything else replaces it
+            if case .error = result.agentResponse {} else {
+                clearActionState(for: proposal)
+                agentAction = nil
+            }
+        }
+        if result.agentResponse.isProposal {
+            proposalRequestId = result.requestId
+        }
         let agentDuration = Date().timeIntervalSince(agentStart)
         await timingLogger.logStep("frontend.send_to_agent", duration: agentDuration, details: "response_type=\(result.agentResponse.typeString)")
         lastAgentRun = result.requestId.map {
@@ -906,9 +926,10 @@ final class AgentViewModel: ObservableObject {
     
     private func sendToAgent(
         query: String,
+        followUpOf: String?,
         accessToken: String
     ) async throws -> (AgentActionResult, String) {
-        let request = AgentActionRequest(query: query)
+        let request = AgentActionRequest(query: query, followUpOf: followUpOf)
         
         // Log total time from frontend perspective (includes all overhead)
         let totalStart = Date()

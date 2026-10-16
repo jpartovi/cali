@@ -63,11 +63,13 @@ def relative_dates_sheet(now: datetime, timezone_name: str) -> str:
 async def run_agent(
     input_state: Dict[str, Any], run_id: Optional[UUID] = None, metadata: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Run one stateless agent request and return the graph's output state.
+    """Run one stateless agent request and return the graph's output state plus its `messages`.
 
     run_id becomes the LangSmith trace's id, so a request_id the app reports opens its trace directly.
+    The messages are what a follow-up request continues from.
     """
     config: Dict[str, Any] = {"recursion_limit": RECURSION_LIMIT, "run_name": "agent", "metadata": metadata or {}}
     if run_id is not None:
         config["run_id"] = run_id
-    return await get_agent_graph().ainvoke(input_state, config=config)
+    graph = get_agent_graph()
+    return await graph.ainvoke(input_state, config=config, output_keys=[*graph.output_channels, "messages"])

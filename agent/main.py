@@ -562,17 +562,26 @@ _KIND_LABELS = {
 }
 
 
-def _build_request_kind_section(kind: str) -> str:
+def _build_request_kind_section(kinds: List[str]) -> str:
     """Request kind from the pre-pass - tells the agent which instructions below apply"""
-    return f"""REQUEST KIND:
-An automatic check identified this request as: {_KIND_LABELS[kind]}.
+    if len(kinds) == 1:
+        return f"""REQUEST KIND:
+An automatic check identified this request as: {_KIND_LABELS[kinds[0]]}.
 The instructions below cover this kind of request only. If the request is clearly something else, still handle what the user actually asked with your tools, or call do_nothing if it is unsupported."""
+    labels = ", then ".join(_KIND_LABELS[kind] for kind in kinds)
+    return f"""REQUEST KIND:
+An automatic check identified the requests in this conversation as: {labels}.
+The instructions below cover these kinds of request only. If a request is clearly something else, still handle what the user actually asked with your tools, or call do_nothing if it is unsupported."""
 
 
-def _build_kind_sections(kind: str) -> List[str]:
-    """Only the instructions a request of this kind needs (smart disclosure)"""
+def _build_kind_sections(kinds: List[str]) -> List[str]:
+    """Only the instructions requests of these kinds need (smart disclosure); several for a follow-up"""
     # An invite may add people to an existing event or create a new one, so it gets both sets of instructions
-    covers = ["create_event", "update_event", "invite_people"] if kind == "invite_people" else [kind]
+    covers: List[str] = []
+    for kind in kinds:
+        for k in ["create_event", "update_event", "invite_people"] if kind == "invite_people" else [kind]:
+            if k not in covers:
+                covers.append(k)
     finds_existing_event = any(k in ("find_event", "update_event", "delete_event") for k in covers)
     writes = any(k in ("create_event", "update_event", "delete_event") for k in covers)
     creates = "create_event" in covers
@@ -581,7 +590,7 @@ def _build_kind_sections(kind: str) -> List[str]:
         calendar_rules = _CALENDAR_SELECTION_RULES + "\n\n" + _EXISTING_EVENT_CALENDAR_RULE
     elif creates:
         calendar_rules = _CALENDAR_SELECTION_RULES
-    elif kind in ("update_event", "delete_event"):
+    elif any(k in ("update_event", "delete_event") for k in covers):
         calendar_rules = _EXISTING_EVENT_CALENDAR_RULE
     else:
         calendar_rules = ""
@@ -594,15 +603,15 @@ def _build_kind_sections(kind: str) -> List[str]:
     return [
         _build_agent_identity_section(),
         _build_architecture_section(),
-        _build_request_kind_section(kind),
+        _build_request_kind_section(kinds),
         _TOOL_REFERENCE,
         calendar_rules,
         patterns,
         _build_find_event_section() if finds_existing_event else "",
         _USING_PREPASS_SECTION if finds_existing_event or creates else "",
-        _USING_SUGGESTED_TIMES_SECTION if kind == "create_event" else "",
+        _USING_SUGGESTED_TIMES_SECTION if "create_event" in kinds else "",
         _GUESTS_SECTION if creates or "update_event" in covers else "",
-        _build_tool_result_processing_section() if kind != "show_schedule" else "",
+        _build_tool_result_processing_section() if any(k != "show_schedule" for k in kinds) else "",
         _build_error_handling_section() if writes else "",
         "".join(_build_examples_section(k) for k in covers if k != "invite_people"),
     ]
@@ -611,7 +620,7 @@ def _build_kind_sections(kind: str) -> List[str]:
 def _build_system_prompt(
     current_time: str,
     user_timezone: str,
-    request_kind: Optional[str] = None,
+    request_kinds: Optional[List[str]] = None,
 ) -> tuple[str, str]:
     """Assemble the system prompt as (static instructions, per-request time context).
 
@@ -621,7 +630,8 @@ def _build_system_prompt(
     after the ~6k tokens that never change.
 
     When the pre-pass identified the request kind, only that kind's instructions are
-    included. The static block is still fixed per kind, so each kind caches separately.
+    included (a follow-up's conversation can cover several kinds). The static block is
+    still fixed per set of kinds, so each caches separately.
     """
     # Parse ISO string to datetime object
     try:
@@ -641,8 +651,8 @@ def _build_system_prompt(
         raise ValueError(f"Invalid current_time format: {current_time}") from e
     
     # Everything that never changes goes in the first message so it can be cached
-    if request_kind in _KIND_LABELS:
-        static_sections = _build_kind_sections(request_kind)
+    if request_kinds and all(kind in _KIND_LABELS for kind in request_kinds):
+        static_sections = _build_kind_sections(request_kinds)
     else:
         # Unknown, unsure or "other": the full prompt, exactly as before the pre-pass
         static_sections = [
@@ -665,8 +675,16 @@ def _build_system_prompt(
 # ============================================================================
 
 
+_FOLLOW_UP_SECTION = """FOLLOW-UP:
+The user hasn't accepted or rejected your proposal above, so nothing was saved. Their next message may change it or ask for something else.
+To change it, make the whole proposal again with the change: a proposed new event isn't on the calendar, so it's still request_create_event. Reuse what you already looked up."""
+
+
 class State(TypedDict):
     query: str
+    history: Optional[List[BaseMessage]]  # A follow-up's earlier conversation (the proposal it follows); None otherwise
+    prompt_kinds: Optional[List[str]]  # A follow-up's request kinds so far, this one included; None for the full prompt
+    history_people: Optional[dict]  # Everyone a follow-up's earlier requests talked about (still invitable)
     auth: dict
     success: bool
     type: Optional[Literal[
@@ -734,7 +752,9 @@ def agent_node(state: State) -> Dict[str, Any]:
         raise ValueError("current_day_of_week is required in state but was not provided")
     
     # Build system prompt from organized sections
-    static_prompt, time_prompt = _build_system_prompt(current_time, user_timezone, state.get("request_kind"))
+    history = state.get("history")
+    request_kinds = state.get("prompt_kinds") if history else [state.get("request_kind")]
+    static_prompt, time_prompt = _build_system_prompt(current_time, user_timezone, request_kinds)
     system_messages = [
         # Breakpoint after the static block so every request reuses it from the cache
         SystemMessage(content=[{
@@ -756,7 +776,14 @@ def agent_node(state: State) -> Dict[str, Any]:
         system_messages.append(SystemMessage(content=people_section))
 
     # Initialize messages if empty
-    if not messages:
+    if not messages and history:
+        # Follow-up: the earlier conversation under instructions for every kind so far and the current time,
+        # then what was looked up for the new message
+        messages = (
+            system_messages[:2] + history[2:]
+            + [SystemMessage(content=_FOLLOW_UP_SECTION)] + system_messages[2:] + [HumanMessage(content=query)]
+        )
+    elif not messages:
         messages = system_messages + [HumanMessage(content=query)]
         if state.get("request_kind") in ("create_event", "invite_people"):
             messages += _prefetched_calendar_messages((state.get("auth") or {}).get("writable_calendars"))
@@ -1016,19 +1043,22 @@ def _check_guests(result: Dict[str, Any], state: State) -> Optional[str]:
     only takes off guests who are on the event).
     """
     metadata = result.get("metadata") or {}
-    people = state.get("prepass_people") or {}
+    # A follow-up can also invite anyone its earlier requests talked about
+    sources = [state.get("prepass_people") or {}, state.get("history_people") or {}]
     known: Dict[str, Optional[str]] = {}
     # Contacts with no email, by lowercased name: (contact_id, display_name)
     no_email: Dict[str, tuple] = {}
     # Low-confidence maybes can't be invited (only named, for a clearer error)
-    maybe = {(p.get("email") or p.get("display_name") or "").strip().lower() for p in people.get("maybe") or []}
-    for person in [*(people.get("people") or []),
-                   *(p for group in people.get("ambiguous") or [] for p in group)]:
+    maybe = {(p.get("email") or p.get("display_name") or "").strip().lower() for people in sources for p in people.get("maybe") or []}
+    for person in [*(p for people in sources for p in people.get("people") or []),
+                   *(p for people in sources for group in people.get("ambiguous") or [] for p in group)]:
         if person.get("email"):
             known[person["email"].lower()] = person.get("display_name")
         elif person.get("contact_id") and person.get("display_name"):
             no_email[person["display_name"].strip().lower()] = (person["contact_id"], person["display_name"])
-    said = {email.lower() for email in _EMAIL_IN_TEXT.findall(state.get("query") or "")}
+    # Emails the user typed, in this message or (for a follow-up) an earlier one
+    said_text = " ".join(str(m.content) for m in state.get("messages") or [] if isinstance(m, HumanMessage))
+    said = {email.lower() for email in _EMAIL_IN_TEXT.findall(f"{state.get('query') or ''} {said_text}")}
 
     unknown = []
     unknown_names = []
