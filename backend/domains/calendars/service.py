@@ -74,15 +74,34 @@ def _google_attendee(guest: EventAttendeeInput) -> Dict[str, Any]:
     return attendee
 
 
+def _with_organizer(attendees: List[Dict[str, Any]], organizer_email: str | None) -> List[Dict[str, Any]]:
+    """The guest list as the Google Calendar app keeps it for an event the user organizes.
+
+    With guests, the organizing calendar is listed first as an accepted attendee; once
+    only the organizer is left, the list is emptied so the event is solo again.
+    """
+    organizer = (organizer_email or "").lower()
+    if not organizer:
+        return attendees
+    others = [a for a in attendees if (a.get("email") or "").lower() != organizer]
+    if not others:
+        return []
+    if len(others) < len(attendees):
+        return attendees
+    return [{"email": organizer_email, "responseStatus": "accepted"}, *attendees]
+
+
 def _merge_attendees(
     current: List[Dict[str, Any]],
     add: List[EventAttendeeInput],
     remove: List[EventAttendeeInput],
+    organizer_email: str | None = None,
 ) -> List[Dict[str, Any]]:
     """The event's guest list with `remove` taken off and `add` invited.
 
     Guests already on the event keep their entries as Google returned them (response
-    status, organizer flags); new guests are appended.
+    status, organizer flags); new guests are appended. When `organizer_email` is the
+    user's calendar, it is listed while there are guests and dropped when none are left.
     """
     removed = {guest.email for guest in remove}
     merged = [a for a in current if isinstance(a, dict) and (a.get("email") or "").lower() not in removed]
@@ -91,7 +110,7 @@ def _merge_attendees(
         if guest.email not in present and guest.email not in removed:
             merged.append(_google_attendee(guest))
             present.add(guest.email)
-    return merged
+    return _with_organizer(merged, organizer_email)
 
 
 class CalendarService:
@@ -319,7 +338,11 @@ class CalendarService:
         if location:
             event_data["location"] = location
         if attendees:
-            event_data["attendees"] = [_google_attendee(guest) for guest in attendees]
+            # The calendar the event goes on is its organizer; list it as attending like the Google Calendar app does
+            event_data["attendees"] = _with_organizer(
+                [_google_attendee(guest) for guest in attendees],
+                supabase_calendar["google_calendar_id"],
+            )
         # Guests get an email invite from Google
         send_updates = "all" if attendees else None
 
@@ -571,7 +594,14 @@ class CalendarService:
         current_attendees = [a for a in current_event.get("attendees") or [] if isinstance(a, dict)]
         attendees = current_attendees
         if add_attendees or remove_attendees:
-            attendees = _merge_attendees(current_attendees, add_attendees or [], remove_attendees or [])
+            # Only the organizer's own copy manages the organizer entry; someone else's invite is left as is
+            organizer = current_event.get("organizer") or {}
+            organizer_email = organizer.get("email") if isinstance(organizer, dict) else None
+            if not organizer.get("self") and organizer_email != supabase_calendar["google_calendar_id"]:
+                organizer_email = None
+            attendees = _merge_attendees(
+                current_attendees, add_attendees or [], remove_attendees or [], organizer_email
+            )
             if attendees != current_attendees:
                 event_data["attendees"] = attendees
 
