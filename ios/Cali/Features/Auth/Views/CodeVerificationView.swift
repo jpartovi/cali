@@ -26,15 +26,9 @@ struct CodeVerificationView: View {
                     .font(.headline)
                     .foregroundStyle(ColorPalette.Text.secondary)
 
-                TextField("123456", text: $viewModel.otpCode)
-                    .keyboardType(.numberPad)
-                    .textContentType(.oneTimeCode)
-                    .padding()
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-                    .focused(focusedField, equals: .code)
+                OTPCodeField(code: $viewModel.otpCode, focusedField: focusedField)
                     .onChange(of: viewModel.otpCode) { _, newValue in
-                        let digits = newValue.filter(\.isNumber)
-                        if digits.count == 6, !viewModel.isLoading {
+                        if newValue.filter(\.isNumber).count == OTPCodeField.length, !viewModel.isLoading {
                             Task {
                                 await viewModel.verifyOTP()
                             }
@@ -85,5 +79,58 @@ struct CodeVerificationView: View {
     }
 }
 
+/// Six digit boxes backed by a single invisible text field, so keyboard entry,
+/// paste, and one-time-code autofill all behave like a normal field.
+private struct OTPCodeField: View {
+    static let length = 6
 
+    @Binding var code: String
+    let focusedField: FocusState<ContentView.Field?>.Binding
 
+    private var isFocused: Bool { focusedField.wrappedValue == .code }
+
+    var body: some View {
+        ZStack {
+            TextField("", text: $code)
+                .keyboardType(.numberPad)
+                .textContentType(.oneTimeCode)
+                .foregroundStyle(.clear)
+                .tint(.clear)
+                .focused(focusedField, equals: .code)
+                .onChange(of: code) { _, newValue in
+                    let digits = String(newValue.filter(\.isNumber).prefix(Self.length))
+                    if digits != newValue {
+                        code = digits
+                    }
+                }
+
+            HStack(spacing: 10) {
+                ForEach(0..<Self.length, id: \.self) { index in
+                    digitBox(at: index)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        .frame(height: 60)
+    }
+
+    private func digitBox(at index: Int) -> some View {
+        let digits = Array(code)
+        let isActive = isFocused && index == min(digits.count, Self.length - 1)
+
+        return Text(index < digits.count ? String(digits[index]) : "")
+            .font(.system(size: 28, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .foregroundStyle(ColorPalette.Text.primary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(
+                        isActive ? ColorPalette.Semantic.primary : Color.clear,
+                        lineWidth: 2
+                    )
+            )
+            .animation(.easeOut(duration: 0.15), value: isActive)
+    }
+}
