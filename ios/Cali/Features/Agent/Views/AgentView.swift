@@ -115,6 +115,26 @@ struct AgentView: View {
                 }
             }
         }
+        // After confirming, ask for the email of each guest whose contact has none
+        .sheet(item: Binding(
+            get: { viewModel.guestNeedingEmail },
+            set: { _ in }
+        )) { guest in
+            GuestEmailModal(
+                name: guest.name,
+                isSaving: viewModel.isSavingGuestEmail,
+                onAdd: { email in
+                    Task { await viewModel.addGuestEmail(email) }
+                },
+                onCancel: {
+                    Task { await viewModel.skipGuestEmail() }
+                }
+            )
+            .id(guest.id)
+            .presentationDetents([.height(260)])
+            .presentationDragIndicator(.hidden)
+            .interactiveDismissDisabled()
+        }
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isTypingPrompt)
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showsRatingNote)
         .onChange(of: viewModel.lastAgentRun) { _, _ in

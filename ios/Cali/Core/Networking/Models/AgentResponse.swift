@@ -449,10 +449,12 @@ struct ShowScheduleMetadata: Codable, Sendable {
 }
 
 /// A guest the agent wants to invite to (or take off) an event.
-/// Also sent as-is in create/update requests to the backend.
+/// Also sent as-is in create/update requests to the backend, once every guest has an email.
+/// A contact with no email on file comes with only `contact_id`; the user is asked for the email on confirm.
 struct EventAttendeeMetadata: Codable, Sendable, Hashable {
-    let email: String
-    let display_name: String?
+    var email: String?
+    var display_name: String?
+    var contact_id: String? = nil
 }
 
 struct CreateEventMetadata: Codable, Sendable {
@@ -462,7 +464,7 @@ struct CreateEventMetadata: Codable, Sendable {
     let calendar_id: String
     let description: String?
     let location: String?
-    let attendees: [EventAttendeeMetadata]?
+    var attendees: [EventAttendeeMetadata]?
 
     private enum CodingKeys: String, CodingKey {
         case summary
@@ -483,7 +485,7 @@ struct UpdateEventMetadata: Codable, Sendable {
     let end: DateTimeDict?
     let description: String?
     let location: String?
-    let add_attendees: [EventAttendeeMetadata]?
+    var add_attendees: [EventAttendeeMetadata]?
     let remove_attendees: [EventAttendeeMetadata]?
 
     private enum CodingKeys: String, CodingKey {

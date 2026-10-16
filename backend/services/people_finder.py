@@ -57,6 +57,9 @@ def _day(value: Any, tz: ZoneInfo) -> Optional[str]:
 def _details(person: Dict[str, Any], tz: ZoneInfo) -> str:
     """Where the candidate comes from and how the user knows them (shown to Jev and the agent)."""
     parts = []
+    name = person.get("display_name")
+    if not name or "@" in name:
+        parts.append("no name on file, only this email address")
     if person.get("nickname"):
         parts.append(f"nickname \"{person['nickname']}\"")
     parts.append("in contacts" if person.get("in_contacts") else "not in contacts (from calendar events)")
@@ -125,9 +128,15 @@ async def find_people_for_user(user_id: str, text: str, timezone_name: str) -> D
         key: Noul(
             instructions=(
                 f"Is the request talking about this person: {description}? "
-                "If the request names one person who could be several of the candidates, answer yes only for "
-                "the one they most likely mean: usually the one they've had events with or invited most recently "
-                "and most often, especially if they have an event together coming up."
+                "Requests are often dictated, so a name may be misheard or misspelled: a name that sounds like "
+                "this person's counts as their name (\"Dibello\" for \"de Belloy\", \"Madeline\" for \"Madeleine\"). "
+                "Judge first by how well the name in the request matches this person's name. A person with no name "
+                "on file, matched only through their email address, is a much weaker match than a contact whose "
+                "name matches, and a full name (first and last) that matches beats one that only shares a first name. "
+                "Only among candidates whose names match equally well, answer yes for the one they most likely "
+                "mean: usually the one they've had events with or invited most recently and most often, especially "
+                "if they have an event together coming up. If nothing sets equally matching candidates apart, "
+                "be unsure about each of them rather than picking one."
             )
         )
         for key, description in descriptions.items()

@@ -42,6 +42,19 @@ class AppleImportRequest(BaseModel):
         return seen
 
 
+class AddContactEmailRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=320)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        email = value.strip().lower()
+        local, _, domain = email.partition("@")
+        if not local or "." not in domain or any(ch.isspace() for ch in email):
+            raise ValueError("Not an email address")
+        return email
+
+
 class AppleImportResponse(BaseModel):
     imported: int
     updated: int

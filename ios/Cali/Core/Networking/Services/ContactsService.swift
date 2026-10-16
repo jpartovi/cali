@@ -58,6 +58,11 @@ enum ContactsServiceError: Error {
 protocol ContactsServicing {
     func importAppleContacts(accessToken: String, contacts: [AppleContactPayload]) async throws -> AppleContactsImportResponse
     func listContacts(accessToken: String) async throws -> [ContactRecord]
+    func addEmail(accessToken: String, contactId: String, email: String) async throws -> ContactRecord
+}
+
+private struct AddContactEmailRequest: Encodable {
+    let email: String
 }
 
 final class ContactsService: ContactsServicing {
@@ -126,6 +131,16 @@ final class ContactsService: ContactsServicing {
 
     func listContacts(accessToken: String) async throws -> [ContactRecord] {
         try await getJSON(path: "/api/v1/contacts/", accessToken: accessToken)
+    }
+
+    /// Adds an email to the contact in Cali (invited at it when they had none)
+    func addEmail(accessToken: String, contactId: String, email: String) async throws -> ContactRecord {
+        let id = contactId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? contactId
+        return try await postJSON(
+            path: "/api/v1/contacts/\(id)/emails",
+            accessToken: accessToken,
+            body: AddContactEmailRequest(email: email)
+        )
     }
 
     private func getJSON<Response: Decodable>(path: String, accessToken: String) async throws -> Response {

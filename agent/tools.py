@@ -46,14 +46,22 @@ def _optional(value: Optional[str]) -> Optional[str]:
     return text
 
 
-def _attendees(emails: Optional[List[str]]) -> List[EventAttendee]:
-    """Guest emails from a tool call, cleaned and de-duplicated (placeholders dropped)."""
+def _attendees(emails: Optional[List[str]], names_without_email: Optional[List[str]] = None) -> List[EventAttendee]:
+    """Guests from a tool call, cleaned and de-duplicated (placeholders dropped).
+
+    Names are contacts with no email on file; _check_guests matches them to their contact.
+    """
     seen: List[str] = []
     for raw in emails or []:
         email = (_optional(raw) or "").lower()
         if "@" in email and email not in seen:
             seen.append(email)
-    return [EventAttendee(email=email) for email in seen]
+    names: List[str] = []
+    for raw in names_without_email or []:
+        name = _optional(raw)
+        if name and name.lower() not in (n.lower() for n in names):
+            names.append(name)
+    return [EventAttendee(email=email) for email in seen] + [EventAttendee(display_name=name) for name in names]
 
 # Context variable to store auth for tools (set during tool execution)
 import contextvars
@@ -342,6 +350,7 @@ def request_create_event(
     description: str = None,
     location: str = None,
     attendee_emails: List[str] = None,
+    guests_without_email: List[str] = None,
 ) -> Dict[str, Any]:
     """
     Request to create a new event. This terminates the agent.
@@ -367,6 +376,8 @@ def request_create_event(
         location: Optional location for the event
         attendee_emails: Optional emails of people to invite (they get a Google Calendar invite).
                  Use emails from the PEOPLE IN THIS REQUEST section, or ones the user said outright.
+        guests_without_email: Optional names of people to invite whom PEOPLE IN THIS REQUEST lists with
+                 "no email on file", exactly as the section names them. The user is asked for their email.
     
     Returns:
         Dict with type "create-event" and metadata
@@ -395,7 +406,7 @@ def request_create_event(
             calendar_id=calendar_id,
             description=description,
             location=location,
-            attendees=_attendees(attendee_emails),
+            attendees=_attendees(attendee_emails, guests_without_email),
         )
     else:
         # Parse datetime strings to datetime objects for timed events
@@ -409,7 +420,7 @@ def request_create_event(
             calendar_id=calendar_id,
             description=description,
             location=location,
-            attendees=_attendees(attendee_emails),
+            attendees=_attendees(attendee_emails, guests_without_email),
         )
     
     response = CreateEventResponse(metadata=metadata)
@@ -429,6 +440,7 @@ def request_update_event(
     location: str = None,
     add_attendee_emails: List[str] = None,
     remove_attendee_emails: List[str] = None,
+    add_guests_without_email: List[str] = None,
 ) -> Dict[str, Any]:
     """
     Request to update an existing event. This terminates the agent.
@@ -457,6 +469,8 @@ def request_update_event(
         remove_attendee_emails: Optional emails of guests to take off the event (they get a notice).
                  Use emails from the PEOPLE IN THIS REQUEST section, or ones the user said outright.
                  Leave both out to keep the guest list as it is.
+        add_guests_without_email: Optional names of people to invite whom PEOPLE IN THIS REQUEST lists with
+                 "no email on file", exactly as the section names them. The user is asked for their email.
     
     Returns:
         Dict with type "update-event" and metadata
@@ -497,7 +511,7 @@ def request_update_event(
         end=end_dt,
         description=description,
         location=location,
-        add_attendees=_attendees(add_attendee_emails),
+        add_attendees=_attendees(add_attendee_emails, add_guests_without_email),
         remove_attendees=_attendees(remove_attendee_emails),
     )
     

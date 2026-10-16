@@ -140,6 +140,22 @@ class ContactsService:
 
         return AppleImportResponse(imported=imported, updated=updated, deleted=deleted)
 
+    def add_email(self, user_id: str, contact_id: str, email: str) -> ContactResponse | None:
+        """Adds an email to a contact (the app also writes it to the Apple card) and invites them
+        at it when they had no invite email. None when the contact isn't the user's."""
+        existing = self.repository.get_contact(user_id, contact_id)
+        if existing is None:
+            return None
+        emails = list(existing.get("emails") or [])
+        if email not in emails:
+            emails.append(email)
+        row = self.repository.update_contact(
+            user_id,
+            contact_id,
+            {"emails": emails, "invite_email": existing.get("invite_email") or email},
+        )
+        return self._to_response(row)
+
     def list_contacts(self, user_id: str) -> List[ContactResponse]:
         return [self._to_response(row) for row in self.repository.list_contacts(user_id)]
 

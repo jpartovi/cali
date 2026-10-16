@@ -147,8 +147,8 @@ INTERNAL TOOLS (for gathering information - do NOT terminate):
 EXTERNAL TOOLS (terminate agent and show results to user):
 - show_schedule(start_time, end_time): Display schedule to user
 - show_event(event_id, calendar_id): Display specific event to user
-- request_create_event(summary, calendar_id, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, attendee_emails=None): Request to create event. Use start_time/end_time for timed events, or start_date/end_date for all-day events (e.g., birthdays, holidays). Only include description/location if explicitly requested or necessary. attendee_emails invites guests (see GUESTS).
-- request_update_event(event_id, calendar_id, summary=None, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, add_attendee_emails=None, remove_attendee_emails=None): Request to update event. Use start_time/end_time for timed events, or start_date/end_date for all-day events. Only include fields that need updating. Only include description if explicitly requested. add_attendee_emails/remove_attendee_emails change the guest list (see GUESTS).
+- request_create_event(summary, calendar_id, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, attendee_emails=None, guests_without_email=None): Request to create event. Use start_time/end_time for timed events, or start_date/end_date for all-day events (e.g., birthdays, holidays). Only include description/location if explicitly requested or necessary. attendee_emails (and guests_without_email) invites guests (see GUESTS).
+- request_update_event(event_id, calendar_id, summary=None, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, add_attendee_emails=None, remove_attendee_emails=None, add_guests_without_email=None): Request to update event. Use start_time/end_time for timed events, or start_date/end_date for all-day events. Only include fields that need updating. Only include description if explicitly requested. add_attendee_emails/remove_attendee_emails/add_guests_without_email change the guest list (see GUESTS).
 - request_delete_event(event_id, calendar_id): Request to delete event
 - do_nothing(reason): Handle unsupported/unclear requests. reason is shown to the user: one short phrase, not first person ("No free time fits on Friday", not "I couldn't find any free time")"""
 
@@ -280,7 +280,7 @@ First decide which, using the PRE-ANALYSIS (or find_event over the day the reque
   request_update_event(event_id, calendar_id, add_attendee_emails). Don't change its time or title.
 - Only if no existing event fits, create one with them invited: request_create_event(..., attendee_emails), following the CREATE EVENT rules.
 Example: "Invite Henry to dinner tomorrow" with PRE-ANALYSIS showing "Dinner" tomorrow 5:00-5:30 PM → request_update_event(event_id, calendar_id, add_attendee_emails: [Henry's email])
-Example: "Invite Henry to dinner Saturday" with no dinner on Saturday → request_create_event(summary: "Dinner with Henry", ..., attendee_emails: [Henry's email])
+Example: "Invite Henry to dinner Saturday" with no dinner on Saturday → request_create_event(summary: "Dinner", ..., attendee_emails: [Henry's email])
 
 """,
     "other": """6. UNSUPPORTED REQUEST
@@ -420,9 +420,12 @@ unless it clearly contradicts the request (wrong day, wrong kind of event).
 
 _GUESTS_SECTION = """GUESTS (inviting people to events, or taking them off):
 - Creating an event with or for other people ("lunch with Henry", "set up a call with Rohan and Emily") invites them: pass their emails in attendee_emails. Events that only mention someone ("call mom", "pick up Sam") don't invite anyone unless the user asks.
+- Guests see the event's title on their own calendar, so a title must make sense to them too: leave out the names of the people you invite. "Lunch with Eli" with Eli invited → summary "Lunch" (Eli would otherwise see "Lunch with Eli"); "call with Rohan and Emily" inviting both → "Call". Keep names of people who aren't invited ("Dinner with Sam" if only Henry is invited). The same goes for any new title you give an event that has guests.
 - "Invite / add X to <event>" → request_update_event with add_attendee_emails; "remove / take X off <event>" → remove_attendee_emails. Changing other fields doesn't touch the guest list.
 - Only use emails from the PEOPLE IN THIS REQUEST section, or an email address the user said outright. Never guess or make up an address.
-- If the section lists a person as unclear between several people, invite the most likely one. If someone has no email on file or isn't listed, still make the event, without them.
+- If the section lists a person as unclear between several people, invite the most likely one.
+- Never invite someone the section only lists under "Possibly also (low confidence)" - unless the user gave their email outright, leave them off.
+- To invite someone the section lists with "no email on file", pass their name in guests_without_email (add_guests_without_email for an update), not in the email list - the app asks the user for their email. Someone who isn't listed at all: still make the event, without them.
 - Guests get an email from Google Calendar when they're invited or taken off."""
 
 
@@ -1015,24 +1018,56 @@ def _check_guests(result: Dict[str, Any], state: State) -> Optional[str]:
     metadata = result.get("metadata") or {}
     people = state.get("prepass_people") or {}
     known: Dict[str, Optional[str]] = {}
-    for person in [*(people.get("people") or []), *(people.get("maybe") or []),
+    # Contacts with no email, by lowercased name: (contact_id, display_name)
+    no_email: Dict[str, tuple] = {}
+    # Low-confidence maybes can't be invited (only named, for a clearer error)
+    maybe = {(p.get("email") or p.get("display_name") or "").strip().lower() for p in people.get("maybe") or []}
+    for person in [*(people.get("people") or []),
                    *(p for group in people.get("ambiguous") or [] for p in group)]:
         if person.get("email"):
             known[person["email"].lower()] = person.get("display_name")
+        elif person.get("contact_id") and person.get("display_name"):
+            no_email[person["display_name"].strip().lower()] = (person["contact_id"], person["display_name"])
     said = {email.lower() for email in _EMAIL_IN_TEXT.findall(state.get("query") or "")}
 
     unknown = []
+    unknown_names = []
     for key in ("attendees", "add_attendees", "remove_attendees"):
+        guests = []
         for guest in metadata.get(key) or []:
             email = (guest.get("email") or "").lower()
-            if email in known:
+            if not email:
+                # A contact with no email on file; can't take off someone who isn't on the event
+                match = no_email.get((guest.get("display_name") or "").strip().lower())
+                if key == "remove_attendees":
+                    continue
+                if match:
+                    guest["contact_id"], guest["display_name"] = match
+                else:
+                    unknown_names.append(guest.get("display_name") or "")
+            elif email in known:
                 guest["display_name"] = guest.get("display_name") or known[email]
             elif email not in said and key != "remove_attendees":
                 unknown.append(email)
+            guests.append(guest)
+        if key in metadata:
+            metadata[key] = guests
+    unsure = [guest for guest in [*unknown, *unknown_names] if guest.strip().lower() in maybe]
+    if unsure:
+        return (
+            f"Validation failed: {', '.join(unsure)} is only a low-confidence maybe in PEOPLE IN THIS REQUEST. "
+            "Don't invite maybes; leave them off and make the request with everyone else."
+        )
     if unknown:
         return (
             f"Validation failed: {', '.join(unknown)} isn't the email of anyone in PEOPLE IN THIS REQUEST, and the "
             "user didn't say it. Only invite emails from that section or ones the user gave; leave out anyone else."
+        )
+    if unknown_names:
+        return (
+            f"Validation failed: {', '.join(unknown_names)} isn't anyone PEOPLE IN THIS REQUEST lists with no email "
+            "on file. Only pass names from that section, spelled as it lists them, in guests_without_email; "
+            "invite people with an email by their email, and leave out anyone else."
         )
     return None
 

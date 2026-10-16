@@ -66,9 +66,14 @@ class ShowScheduleResponse(BaseModel):
 
 
 class EventAttendee(BaseModel):
-    """A guest to invite to (or take off) an event."""
-    email: str
+    """A guest to invite to (or take off) an event.
+
+    A contact with no email on file has no email here, only their contact_id; the app asks
+    the user for the address when they confirm.
+    """
+    email: Optional[str] = None
     display_name: Optional[str] = None
+    contact_id: Optional[str] = None
 
 
 class CreateEventMetadata(BaseModel):

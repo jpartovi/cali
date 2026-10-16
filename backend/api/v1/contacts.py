@@ -1,4 +1,4 @@
-"""Apple contact import and list routes."""
+"""Apple contact import, list and email routes."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from core.dependencies import AuthenticatedUser, get_current_user
 from domains.contacts.schemas import (
+    AddContactEmailRequest,
     AppleImportRequest,
     AppleImportResponse,
     ContactResponse,
@@ -55,3 +56,23 @@ async def list_contacts(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to list contacts.",
         ) from exc
+
+
+@router.post("/{contact_id}/emails", response_model=ContactResponse)
+async def add_contact_email(
+    contact_id: str,
+    payload: AddContactEmailRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> ContactResponse:
+    service = ContactsService()
+    try:
+        contact = await asyncio.to_thread(service.add_email, current_user.id, contact_id, payload.email)
+    except SupabaseStorageError as exc:
+        logger.error("Contact email add failed user_id=%s contact_id=%s: %s", current_user.id, contact_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to add the contact's email.",
+        ) from exc
+    if contact is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Contact not found.")
+    return contact

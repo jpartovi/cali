@@ -79,6 +79,37 @@ class ContactsRepository:
             raise SupabaseStorageError(exc.message) from exc
         return upserted
 
+    def get_contact(self, user_id: str, contact_id: str) -> Dict[str, Any] | None:
+        client = get_service_client()
+        try:
+            result = (
+                client.table("contacts")
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("id", contact_id)
+                .limit(1)
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return (result.data or [None])[0]
+
+    def update_contact(self, user_id: str, contact_id: str, patch: Dict[str, Any]) -> Dict[str, Any]:
+        client = get_service_client()
+        try:
+            result = (
+                client.table("contacts")
+                .update(patch)
+                .eq("user_id", user_id)
+                .eq("id", contact_id)
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        if not result.data:
+            raise SupabaseStorageError("Contact update returned no row.")
+        return result.data[0]
+
     def list_contacts(self, user_id: str, limit: int = 2000) -> List[Dict[str, Any]]:
         client = get_service_client()
         try:

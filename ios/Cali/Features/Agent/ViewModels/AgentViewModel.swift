@@ -54,6 +54,19 @@ final class AgentViewModel: ObservableObject {
     @Published private(set) var ratableMessageRunId: String?
     /// The event a pending update would change, as it is now (fetched in full when the update came in)
     private var pendingUpdateOriginal: CalendarEvent?
+    /// A guest of the confirmed event whose contact has no email, while the user is asked for one
+    @Published private(set) var guestNeedingEmail: GuestNeedingEmail?
+    @Published private(set) var isSavingGuestEmail = false
+    /// The confirmed create/update waiting on guest emails, with the guests settled so far
+    private var actionAwaitingGuestEmails: AgentAction?
+    private var guestEmailAccessToken: String?
+    private let contactsService: ContactsServicing = ContactsService()
+
+    struct GuestNeedingEmail: Identifiable, Equatable {
+        let contactId: String
+        let name: String
+        var id: String { contactId }
+    }
 
     private var noticeDismissTask: Task<Void, Never>?
     private var errorDismissTask: Task<Void, Never>?
@@ -1431,12 +1444,18 @@ final class AgentViewModel: ObservableObject {
         adding: [EventAttendeeMetadata]?,
         removing: [EventAttendeeMetadata]?
     ) -> [CalendarEvent.Attendee] {
-        let removed = Set((removing ?? []).map { $0.email.lowercased() })
+        let removed = Set((removing ?? []).compactMap { $0.email?.lowercased() })
         var attendees = current.filter { !removed.contains(($0.email ?? "").lowercased()) }
         var present = Set(attendees.compactMap { $0.email?.lowercased() })
-        for guest in adding ?? [] where !present.contains(guest.email.lowercased()) {
+        for guest in adding ?? [] {
+            // A guest with no email on file shows by name until the user gives one on confirm
+            guard let email = guest.email?.lowercased() else {
+                attendees.append(CalendarEvent.Attendee(email: nil, displayName: guest.display_name, responseStatus: "needsAction"))
+                continue
+            }
+            guard !present.contains(email) else { continue }
             attendees.append(CalendarEvent.Attendee(email: guest.email, displayName: guest.display_name, responseStatus: "needsAction"))
-            present.insert(guest.email.lowercased())
+            present.insert(email)
         }
         return attendees
     }
@@ -1446,12 +1465,112 @@ final class AgentViewModel: ObservableObject {
             return
         }
         
-        // Store action before clearing it (needed for error cleanup)
-        let pendingAction = action
-        
         // Clear agent action immediately so modal disappears
         agentAction = nil
-        
+
+        // Guests with no email on file: ask for each one before making the event
+        if let guest = Self.guestsWithoutEmail(in: action).first {
+            actionAwaitingGuestEmails = action
+            guestEmailAccessToken = accessToken
+            guestNeedingEmail = GuestNeedingEmail(contactId: guest.contact_id ?? "", name: guest.display_name ?? "This guest")
+            return
+        }
+
+        await performConfirmedAction(action, accessToken: accessToken)
+    }
+
+    /// Saves the email the user gave for the guest being asked about (in Cali and on their Apple
+    /// card), invites them at it, and moves on to the next guest, or makes the event
+    func addGuestEmail(_ email: String) async {
+        guard let guest = guestNeedingEmail, let action = actionAwaitingGuestEmails, !isSavingGuestEmail else { return }
+        isSavingGuestEmail = true
+        defer { isSavingGuestEmail = false }
+
+        // The invite matters most: it goes out even if saving to the contact fails
+        do {
+            let token = try await resolveAccessToken(initial: guestEmailAccessToken)
+            let contact = try await contactsService.addEmail(accessToken: token, contactId: guest.contactId, email: email)
+            do {
+                try await AppleContactsWriter.addEmail(email, toContactWithIdentifier: contact.appleIdentifier)
+            } catch {
+                print("Adding email to Apple contact failed: \(error)")
+            }
+            Task { await ContactDirectory.shared.load() }
+        } catch {
+            print("Adding email to contact failed: \(error)")
+        }
+
+        actionAwaitingGuestEmails = Self.action(action, settingGuest: guest.contactId, email: email)
+        await askForNextGuestEmail()
+    }
+
+    /// Leaves the guest being asked about off the event and moves on
+    func skipGuestEmail() async {
+        guard let guest = guestNeedingEmail, let action = actionAwaitingGuestEmails else { return }
+        actionAwaitingGuestEmails = Self.action(action, settingGuest: guest.contactId, email: nil)
+        await askForNextGuestEmail()
+    }
+
+    private func askForNextGuestEmail() async {
+        guard let action = actionAwaitingGuestEmails else {
+            guestNeedingEmail = nil
+            return
+        }
+        if let next = Self.guestsWithoutEmail(in: action).first {
+            guestNeedingEmail = GuestNeedingEmail(contactId: next.contact_id ?? "", name: next.display_name ?? "This guest")
+            return
+        }
+        guestNeedingEmail = nil
+        actionAwaitingGuestEmails = nil
+        await performConfirmedAction(action, accessToken: guestEmailAccessToken)
+    }
+
+    /// Guests being invited who have no email yet (each is a contact with none on file)
+    private static func guestsWithoutEmail(in action: AgentAction) -> [EventAttendeeMetadata] {
+        let guests: [EventAttendeeMetadata]
+        switch action {
+        case .createEvent(let response):
+            guests = response.metadata.attendees ?? []
+        case .updateEvent(let response):
+            guests = response.metadata.add_attendees ?? []
+        case .showEvent, .showSchedule, .deleteEvent:
+            guests = []
+        }
+        return guests.filter { $0.email == nil && $0.contact_id != nil }
+    }
+
+    /// The action with the guest for `contactId` given `email`, or taken off when it's nil
+    /// (as is any other guest still without an email and no contact to ask about)
+    private static func action(_ action: AgentAction, settingGuest contactId: String, email: String?) -> AgentAction {
+        func settle(_ guests: [EventAttendeeMetadata]?) -> [EventAttendeeMetadata]? {
+            guests?.compactMap { guest in
+                guard guest.email == nil else { return guest }
+                guard let id = guest.contact_id else { return nil }
+                guard id == contactId else { return guest }
+                guard let email else { return nil }
+                var invited = guest
+                invited.email = email
+                return invited
+            }
+        }
+        switch action {
+        case .createEvent(let response):
+            var metadata = response.metadata
+            metadata.attendees = settle(metadata.attendees)
+            return .createEvent(CreateEventResponse(metadata: metadata, query: response.query))
+        case .updateEvent(let response):
+            var metadata = response.metadata
+            metadata.add_attendees = settle(metadata.add_attendees)
+            return .updateEvent(UpdateEventResponse(metadata: metadata, query: response.query))
+        case .showEvent, .showSchedule, .deleteEvent:
+            return action
+        }
+    }
+
+    private func performConfirmedAction(_ action: AgentAction, accessToken: String?) async {
+        // Store action (needed for error cleanup)
+        let pendingAction = action
+
         isConfirmingAction = true
         defer { isConfirmingAction = false }
         
@@ -1569,7 +1688,7 @@ final class AgentViewModel: ObservableObject {
                         calendarId: metadata.calendar_id,
                         description: metadata.description,
                         location: metadata.location,
-                        attendees: metadata.attendees ?? []
+                        attendees: (metadata.attendees ?? []).filter { $0.email != nil }
                     )
                 case (.allDay(let startDateString), .allDay(let endDateString)):
                     // All-day event
@@ -1580,7 +1699,7 @@ final class AgentViewModel: ObservableObject {
                         calendarId: metadata.calendar_id,
                         description: metadata.description,
                         location: metadata.location,
-                        attendees: metadata.attendees ?? []
+                        attendees: (metadata.attendees ?? []).filter { $0.email != nil }
                     )
                 default:
                     throw NSError(domain: "AgentViewModel", code: 1, userInfo: [NSLocalizedDescriptionKey: "Start and end must both be timed or both be all-day events"])
@@ -1711,7 +1830,7 @@ final class AgentViewModel: ObservableObject {
                     calendarId: calendarID,
                     description: metadata.description,
                     location: metadata.location,
-                    addAttendees: metadata.add_attendees ?? [],
+                    addAttendees: (metadata.add_attendees ?? []).filter { $0.email != nil },
                     removeAttendees: metadata.remove_attendees ?? []
                 )
 

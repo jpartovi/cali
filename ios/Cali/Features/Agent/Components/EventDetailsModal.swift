@@ -191,7 +191,9 @@ struct EventDetailsModal: View {
     }
 
     private func isAdded(_ attendee: CalendarEvent.Attendee) -> Bool {
-        guard let original, let key = attendeeKey(attendee) else { return false }
+        guard let original else { return false }
+        // Only a guest the update adds can lack an email (a contact with none on file yet)
+        guard let key = attendeeKey(attendee) else { return true }
         return !original.attendees.contains { attendeeKey($0) == key }
     }
 
