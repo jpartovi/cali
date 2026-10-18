@@ -402,9 +402,9 @@ A PRE-ANALYSIS block may follow. An automatic search over the user's events (the
 - EVENT THE REQUEST ACTS ON: the existing event it most likely shows, changes, cancels or invites people to.
 - EVENTS THE REQUEST REFERS TO: every event it mentions, including reference points ("move my haircut to right
   after lunch" lists the haircut and lunch). Use their start and end times directly (e.g. start right when lunch
-  ends) instead of searching for them.
+  ends) instead of searching for them: a keyword search often misses what it found.
 It matches on meaning, not just words: a title that doesn't repeat the user's words can still be right (e.g. "my workout" →
-"Barry's", a gym class). It may know what an unfamiliar title refers to when you don't, so a likely event with
+"Barry's", a gym class; "philosophy" → "Phil Pset 5"). It may know what an unfamiliar title refers to when you don't, so a likely event with
 probability 0.9 or higher on the right day is the answer even if you can't tell from the title. Below that, trust it
 unless it clearly contradicts the request (wrong day, wrong kind of event).
 - If the event the request acts on fits, use its event_id and calendar_id directly and call the answer tool now:
@@ -522,10 +522,19 @@ def _prepass_event_lines(n: int, event: Dict[str, Any]) -> List[str]:
     ]
 
 
-def _build_prepass_event_section(prepass: Optional[Dict[str, Any]], request_kind: Optional[str] = None) -> str:
+def _build_prepass_event_section(
+    prepass: Optional[Dict[str, Any]], request_kind: Optional[str] = None, follow_up: bool = False
+) -> str:
     """Per-request evidence from the event pre-pass (sent after the time context)"""
     if not prepass:
         return ""
+    if follow_up:
+        # A follow-up usually acts on the proposal ("move it after philosophy"), which the search can't see, so
+        # only a confident match is an existing event it acts on; with nothing found there's nothing to say
+        top = (prepass.get("top") or [])[:1] if prepass.get("status") == "match" else []
+        if not top and not prepass.get("mentioned"):
+            return ""
+        prepass = {**prepass, "top": top}
     creating = request_kind == "create_event"
     # A new event isn't any of these, so for creates only the referenced events matter
     top = [] if creating else (prepass.get("top") or [])
@@ -675,9 +684,37 @@ def _build_system_prompt(
 # ============================================================================
 
 
-_FOLLOW_UP_SECTION = """FOLLOW-UP:
-The user hasn't accepted or rejected your proposal above, so nothing was saved. Their next message may change it or ask for something else.
-To change it, make the whole proposal again with the change: a proposed new event isn't on the calendar, so it's still request_create_event. Reuse what you already looked up."""
+def _proposal_shown(history: List[BaseMessage]) -> List[BaseMessage]:
+    """The earlier conversation, with its last tool result saying what became of the proposal"""
+    for i in range(len(history) - 1, -1, -1):
+        if isinstance(history[i], ToolMessage):
+            shown = ToolMessage(
+                content="Shown to the user as a proposal. They haven't answered yet.",
+                tool_call_id=history[i].tool_call_id,
+            )
+            return history[:i] + [shown] + history[i + 1:]
+    return history
+
+
+def _build_follow_up_section(acts_on_existing: bool) -> str:
+    """Sent right before a follow-up message: the proposal above is still waiting on the user"""
+    lines = [
+        "FOLLOW-UP:",
+        "Before answering your proposal above, the user sent another message. It may change the proposal or ask "
+        "for something else.",
+    ]
+    if acts_on_existing:
+        lines.append(
+            "The PRE-ANALYSIS found the existing event this message acts on, so it's about that event, not your proposal."
+        )
+    else:
+        lines.append(
+            'If it can be about your proposal ("move it to 3", "make it Friday", "add Henry"), make the whole proposal '
+            "again with the change (for a new event, request_create_event again). Moving an unanswered proposal is just "
+            "proposing it at the new time. Only act on another event when the message clearly names one."
+        )
+    lines.append("Reuse what you already looked up.")
+    return "\n".join(lines)
 
 
 class State(TypedDict):
@@ -764,7 +801,7 @@ def agent_node(state: State) -> Dict[str, Any]:
         }]),
         SystemMessage(content=time_prompt),
     ]
-    prepass_section = _build_prepass_event_section(state.get("prepass_event"), state.get("request_kind"))
+    prepass_section = _build_prepass_event_section(state.get("prepass_event"), state.get("request_kind"), bool(history))
     if prepass_section:
         system_messages.append(SystemMessage(content=prepass_section))
     if state.get("request_kind") == "create_event":
@@ -776,12 +813,14 @@ def agent_node(state: State) -> Dict[str, Any]:
         system_messages.append(SystemMessage(content=people_section))
 
     # Initialize messages if empty
+    # Only a confident match is shown to a follow-up as the event it acts on (see _build_prepass_event_section)
+    acts_on_existing = bool(history) and (state.get("prepass_event") or {}).get("status") == "match"
     if not messages and history:
         # Follow-up: the earlier conversation under instructions for every kind so far and the current time,
-        # then what was looked up for the new message
+        # then what was looked up for the new message, and the note right before it
         messages = (
-            system_messages[:2] + history[2:]
-            + [SystemMessage(content=_FOLLOW_UP_SECTION)] + system_messages[2:] + [HumanMessage(content=query)]
+            system_messages[:2] + _proposal_shown(history[2:])
+            + system_messages[2:] + [SystemMessage(content=_build_follow_up_section(acts_on_existing)), HumanMessage(content=query)]
         )
     elif not messages:
         messages = system_messages + [HumanMessage(content=query)]

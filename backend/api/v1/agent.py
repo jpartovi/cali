@@ -386,13 +386,21 @@ async def agent_action(
         calendars_task = asyncio.create_task(asyncio.to_thread(_writable_calendars, current_user.id))
         people_task = asyncio.create_task(_find_prepass_people(current_user.id, query_text, user_timezone))
         request_kind = await _classify_request_kind(query_text)
-        prepass_event = await _find_prepass_event(current_user.id, query_text, request_kind, user_timezone)
-        prepass_time = await _find_prepass_time(current_user.id, query_text, request_kind, user_timezone)
+        # A follow-up's events and times depend on what it follows ("move it after philosophy": which
+        # philosophy depends on when the lunch is), so those pre-passes read the conversation so far
+        context_text = agent_conversations.follow_up_text(conversation, query_text) if conversation else query_text
+        prepass_event = await _find_prepass_event(current_user.id, context_text, request_kind, user_timezone)
+        prepass_time = await _find_prepass_time(current_user.id, context_text, request_kind, user_timezone)
         prepass_people = await people_task  # Never raises: failures come back as None
         # The kinds of request the prompt covers: a follow-up may change its proposal or ask for something else
         prompt_kinds = [request_kind] if request_kind else None
         if conversation:
-            prompt_kinds = conversation.prompt_kinds and list(dict.fromkeys([*conversation.prompt_kinds, *(prompt_kinds or [])]))
+            new_kinds = prompt_kinds or []
+            # "Move it after philosophy" reads as an update, but unless the pre-pass found an existing event it
+            # acts on, it changes the proposal, and the update instructions would send the agent searching for it
+            if request_kind in EXISTING_EVENT_KINDS and not (prepass_event and prepass_event["status"] == "match"):
+                new_kinds = []
+            prompt_kinds = conversation.prompt_kinds and list(dict.fromkeys([*conversation.prompt_kinds, *new_kinds]))
         try:
             auth["writable_calendars"] = await calendars_task
         except Exception as e:
@@ -449,6 +457,9 @@ async def agent_action(
                     prompt_kinds=prompt_kinds,
                     prepass_people=agent_conversations.merge_prepass_people(
                         conversation.prepass_people if conversation else None, prepass_people
+                    ),
+                    context=agent_conversations.add_to_context(
+                        conversation.context if conversation else "", query_text, result
                     ),
                 ),
             )
