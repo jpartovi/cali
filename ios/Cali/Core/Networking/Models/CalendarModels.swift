@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Supabase
 
 struct GoogleAccount: Identifiable, Decodable, Hashable {
     let id: String
@@ -456,6 +457,12 @@ struct CreateEventRequest: Encodable {
 
 struct CalendarCreateEventResponse: Decodable {
     let event: CalendarEvent
+    /// The calendar_event_snapshots row the backend stored for the event (decoded separately)
+    var snapshot: [String: AnyJSON]?
+
+    private enum CodingKeys: String, CodingKey {
+        case event
+    }
 }
 
 struct UpdateEventRequest: Encodable {
@@ -511,4 +518,16 @@ struct UpdateEventRequest: Encodable {
 
 struct CalendarUpdateEventResponse: Decodable {
     let event: CalendarEvent
+    var snapshot: [String: AnyJSON]?
+
+    private enum CodingKeys: String, CodingKey {
+        case event
+    }
+}
+
+struct SnapshotFillResult: Decodable {
+    /// calendar_event_snapshots rows for the requested days, cancelled ones included
+    let snapshots: [[String: AnyJSON]]
+    /// False when a visible calendar isn't synced yet, so its events are missing
+    let complete: Bool
 }

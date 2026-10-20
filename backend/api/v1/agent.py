@@ -77,7 +77,7 @@ EXISTING_EVENT_KINDS = ("find_event", "update_event", "delete_event", "invite_pe
 # Default window when the request names no time ("cancel my haircut")
 PREPASS_EVENT_DAYS_BACK = 1
 PREPASS_EVENT_DAYS_AHEAD = 30
-# Searched first from calendar_event_snapshots (the calendar listener's horizon); Google only on a miss
+# Searched first from calendar_event_snapshots (the calendar listener's horizon); the rest of the window on a miss
 PREPASS_SNAPSHOT_DAYS_AHEAD = 13
 PREPASS_EVENT_TIMEOUT_SECONDS = 4.0
 
@@ -88,7 +88,7 @@ async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optio
         return None
     from datetime import timedelta
     from domains.calendars.service import CalendarService
-    from services.event_finder import find_request_events, snapshot_events_for_user
+    from services.event_finder import cached_events_for_user, find_request_events, snapshot_events_for_user
 
     today = datetime.now(ZoneInfo(user_timezone)).date()
     start_date = today - timedelta(days=PREPASS_EVENT_DAYS_BACK)
@@ -105,12 +105,16 @@ async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optio
         if found["status"] in ("match", "ambiguous") or found["mentioned"] or request_kind not in EXISTING_EVENT_KINDS:
             end_date = snapshot_end
             return found
-        # 2) Nothing there: search the full window from Google
-        source = "google"
-        result = await CalendarService().events_for_date_range(
-            user_id=user_id, start_date=start_date, end_date=end_date, timezone_name=user_timezone,
-        )
-        events = [e for e in result.get("events", []) if e.get("id") and e.get("calendar_id")]
+        # 2) Nothing there: search the full window, loading days not stored yet into the
+        # snapshots (so the next request for them is a database read), else from Google
+        source = "snapshots_filled"
+        events = await cached_events_for_user(user_id, start_date, end_date, user_timezone)
+        if events is None:
+            source = "google"
+            result = await CalendarService().events_for_date_range(
+                user_id=user_id, start_date=start_date, end_date=end_date, timezone_name=user_timezone,
+            )
+            events = [e for e in result.get("events", []) if e.get("id") and e.get("calendar_id")]
         return await find_request_events(user_id, query_text, events, user_timezone)
 
     try:

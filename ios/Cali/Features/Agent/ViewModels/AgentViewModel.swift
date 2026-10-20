@@ -35,6 +35,8 @@ final class AgentViewModel: ObservableObject {
     }
     @Published private(set) var isLoadingSchedule: Bool = false
     @Published private(set) var hasLoadedSchedule: Bool = false
+    /// Days (start of day) whose events are still loading
+    @Published private(set) var loadingDays: Set<Date> = []
     @Published private(set) var focusEvent: ScheduleFocusEvent?
     @Published private(set) var userTimezone: String?
     @Published var agentAction: AgentAction?
@@ -143,6 +145,7 @@ final class AgentViewModel: ObservableObject {
     private let useOnDeviceSpeechRecognition: Bool
     private let snapshotStore = SnapshotScheduleStore()
     private var hasStartedLiveSchedule = false
+    private var firstVisibleDate: Date?
     private let calendarService: CalendarServicing
     private let showScheduleHandler: ShowScheduleActionHandling
     private let calendar: Foundation.Calendar = Foundation.Calendar.autoupdatingCurrent
@@ -202,6 +205,7 @@ final class AgentViewModel: ObservableObject {
         let timezone = await AuthTokenProvider.shared.fetchUserTimezone()
         await MainActor.run {
             self.userTimezone = timezone
+            self.snapshotStore.timeZone = timezone.flatMap(TimeZone.init(identifier:)) ?? .autoupdatingCurrent
         }
     }
     
@@ -621,6 +625,9 @@ final class AgentViewModel: ObservableObject {
             snapshotStore.onEventsChanged = { [weak self] events in
                 self?.replaceDisplayEventsFromSnapshots(events)
             }
+            snapshotStore.onLoadingDaysChanged = { [weak self] days in
+                self?.loadingDays = days
+            }
             do {
                 try await snapshotStore.start()
             } catch {
@@ -636,8 +643,22 @@ final class AgentViewModel: ObservableObject {
         hasLoadedSchedule = true
     }
 
-    /// Visible-day changes no longer refetch Google; snapshots stay live via Realtime.
-    func onVisibleDaysChanged(firstVisibleDate _: Date) {}
+    /// Load the days around the visible ones if they aren't loaded; loaded days stay live via Realtime.
+    func onVisibleDaysChanged(firstVisibleDate: Date) {
+        self.firstVisibleDate = firstVisibleDate
+        Task { await snapshotStore.ensureDays(firstVisible: firstVisibleDate, visibleCount: numberOfDays) }
+    }
+
+    /// Back in the foreground: fetch rows changed while away (Realtime misses them while suspended).
+    func refreshScheduleOnForeground() {
+        guard hasStartedLiveSchedule else { return }
+        Task {
+            try? await snapshotStore.refresh()
+            if let firstVisibleDate {
+                await snapshotStore.ensureDays(firstVisible: firstVisibleDate, visibleCount: numberOfDays)
+            }
+        }
+    }
 
     private func replaceDisplayEventsFromSnapshots(_ snapshots: [DisplayEvent]) {
         let overlays = displayEvents.filter { $0.style != nil }
@@ -1744,8 +1765,10 @@ final class AgentViewModel: ObservableObject {
                     )
                 }
                 
-                // Reload the schedule to get the real event from Google Calendar
-                // This ensures the event displays properly without the .new style
+                // Show the stored event now; Realtime would only bring it a moment later
+                if let snapshot = createdResponse.snapshot {
+                    snapshotStore.apply(record: snapshot)
+                }
                 let createdEvent = createdResponse.event
                 let createdEventID = createdEvent.id
                 
@@ -1856,8 +1879,9 @@ final class AgentViewModel: ObservableObject {
                 )
 
                 // Call calendar service to apply the update
+                let updatedResponse: CalendarUpdateEventResponse
                 do {
-                    _ = try await calendarService.updateEvent(
+                    updatedResponse = try await calendarService.updateEvent(
                         accessToken: token,
                         calendarId: calendarID,
                         eventId: eventID,
@@ -1868,12 +1892,16 @@ final class AgentViewModel: ObservableObject {
                         throw AccessTokenError.missingAuthProvider
                     }
                     token = refreshedToken
-                    _ = try await calendarService.updateEvent(
+                    updatedResponse = try await calendarService.updateEvent(
                         accessToken: token,
                         calendarId: calendarID,
                         eventId: eventID,
                         request: updateRequest
                     )
+                }
+                // Show the stored event now; Realtime would only bring it a moment later
+                if let snapshot = updatedResponse.snapshot {
+                    snapshotStore.apply(record: snapshot)
                 }
 
                 // Determine the day of the updated event using enum pattern matching
@@ -1989,6 +2017,7 @@ final class AgentViewModel: ObservableObject {
                     }
                 }
 
+                snapshotStore.markDeleted(googleCalendarId: calendarID, googleEventId: eventID)
                 displayEvents.removeAll { $0.event.id == eventID }
                 clearActionState(for: pendingAction)
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from postgrest import APIError
@@ -276,8 +276,165 @@ class CalendarListenerRepository:
     def delete_snapshots_for_calendar(self, user_id: str, google_calendar_id: str) -> None:
         client = get_service_client()
         try:
-            (
+            for table in ("calendar_event_snapshots", "calendar_snapshot_coverage"):
+                (
+                    client.table(table)
+                    .delete()
+                    .eq("user_id", user_id)
+                    .eq("google_calendar_id", google_calendar_id)
+                    .execute()
+                )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+
+    def upsert_snapshots(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not rows:
+            return []
+        client = get_service_client()
+        # One shape for every row: PostgREST bulk upserts need matching keys
+        keys = sorted({key for row in rows for key in row})
+        payload = [{key: row.get(key) for key in keys} for row in rows]
+        try:
+            result = (
                 client.table("calendar_event_snapshots")
+                .upsert(payload, on_conflict="user_id,google_calendar_id,google_event_id")
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return result.data or []
+
+    def list_snapshots_overlapping(
+        self,
+        user_id: str,
+        start: datetime,
+        end: datetime,
+        google_calendar_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Snapshot rows (cancelled included) that overlap [start, end)."""
+        client = get_service_client()
+        rows: List[Dict[str, Any]] = []
+        page = 1000
+        offset = 0
+        try:
+            while True:
+                query = (
+                    client.table("calendar_event_snapshots")
+                    .select("*")
+                    .eq("user_id", user_id)
+                    .gt("end_at", start.isoformat())
+                    .lt("start_at", end.isoformat())
+                )
+                if google_calendar_id:
+                    query = query.eq("google_calendar_id", google_calendar_id)
+                batch = query.order("id").range(offset, offset + page - 1).execute().data or []
+                rows.extend(batch)
+                if len(batch) < page:
+                    return rows
+                offset += page
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+
+    def list_coverage(self, user_id: str, day_from: date, day_to: date) -> List[Dict[str, Any]]:
+        """Coverage rows for days in [day_from, day_to]."""
+        client = get_service_client()
+        try:
+            result = (
+                client.table("calendar_snapshot_coverage")
+                .select("google_calendar_id,day,starts_at,ends_at,fetched_at,last_viewed_at")
+                .eq("user_id", user_id)
+                .gte("day", day_from.isoformat())
+                .lte("day", day_to.isoformat())
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return result.data or []
+
+    def covered_span(self, user_id: str, google_calendar_id: str) -> Optional[tuple[datetime, datetime]]:
+        """Earliest start and latest end of a calendar's covered days, if any."""
+        client = get_service_client()
+        try:
+            first = (
+                client.table("calendar_snapshot_coverage")
+                .select("starts_at")
+                .eq("user_id", user_id)
+                .eq("google_calendar_id", google_calendar_id)
+                .order("starts_at")
+                .limit(1)
+                .execute()
+                .data
+            )
+            last = (
+                client.table("calendar_snapshot_coverage")
+                .select("ends_at")
+                .eq("user_id", user_id)
+                .eq("google_calendar_id", google_calendar_id)
+                .order("ends_at", desc=True)
+                .limit(1)
+                .execute()
+                .data
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        if not first or not last:
+            return None
+        return (
+            datetime.fromisoformat(first[0]["starts_at"]),
+            datetime.fromisoformat(last[0]["ends_at"]),
+        )
+
+    def is_covered(self, user_id: str, google_calendar_id: str, start: datetime, end: datetime) -> bool:
+        """Whether a covered day of this calendar overlaps [start, end)."""
+        client = get_service_client()
+        try:
+            result = (
+                client.table("calendar_snapshot_coverage")
+                .select("day")
+                .eq("user_id", user_id)
+                .eq("google_calendar_id", google_calendar_id)
+                .lt("starts_at", end.isoformat())
+                .gt("ends_at", start.isoformat())
+                .limit(1)
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+        return bool(result.data)
+
+    def upsert_coverage(self, rows: List[Dict[str, Any]]) -> None:
+        if not rows:
+            return
+        client = get_service_client()
+        try:
+            (
+                client.table("calendar_snapshot_coverage")
+                .upsert(rows, on_conflict="user_id,google_calendar_id,day")
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+
+    def touch_coverage(self, user_id: str, days: List[date], viewed_at: datetime) -> None:
+        if not days:
+            return
+        client = get_service_client()
+        try:
+            (
+                client.table("calendar_snapshot_coverage")
+                .update({"last_viewed_at": viewed_at.isoformat()})
+                .eq("user_id", user_id)
+                .in_("day", [day.isoformat() for day in days])
+                .execute()
+            )
+        except APIError as exc:
+            raise SupabaseStorageError(exc.message) from exc
+
+    def delete_coverage(self, user_id: str, google_calendar_id: str) -> None:
+        client = get_service_client()
+        try:
+            (
+                client.table("calendar_snapshot_coverage")
                 .delete()
                 .eq("user_id", user_id)
                 .eq("google_calendar_id", google_calendar_id)
@@ -286,15 +443,18 @@ class CalendarListenerRepository:
         except APIError as exc:
             raise SupabaseStorageError(exc.message) from exc
 
-    def prune_old_snapshots(self, ended_before: datetime) -> None:
+    def prune_snapshots(self, keep_from: datetime, keep_until: datetime, viewed_after: datetime) -> None:
+        """Delete stale coverage, then rows outside [keep_from, keep_until) no coverage holds."""
         client = get_service_client()
         try:
-            (
-                client.table("calendar_event_snapshots")
-                .delete()
-                .lt("end_at", ended_before.isoformat())
-                .execute()
-            )
+            client.rpc(
+                "prune_calendar_snapshots",
+                {
+                    "keep_from": keep_from.isoformat(),
+                    "keep_until": keep_until.isoformat(),
+                    "viewed_after": viewed_after.isoformat(),
+                },
+            ).execute()
         except APIError as exc:
             raise SupabaseStorageError(exc.message) from exc
 
@@ -311,6 +471,20 @@ class CalendarListenerRepository:
         if not result.data:
             return None
         return result.data[0]
+
+    def insert_jobs(self, rows: List[Dict[str, Any]]) -> None:
+        """Insert many jobs at once; on a duplicate, fall back to one at a time (skipping it)."""
+        if not rows:
+            return
+        client = get_service_client()
+        try:
+            client.table("calendar_jobs").insert(rows).execute()
+        except APIError as exc:
+            message = (exc.message or "").lower()
+            if "duplicate" not in message and "unique" not in message:
+                raise SupabaseStorageError(exc.message) from exc
+            for row in rows:
+                self.insert_job(row)
 
     def cancel_event_jobs(
         self, user_id: str, google_event_id: str, kinds: Optional[List[str]] = None

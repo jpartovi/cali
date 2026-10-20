@@ -7,6 +7,7 @@
 
 import Foundation
 import os
+import Supabase
 
 private let calendarLogger = Logger(subsystem: "com.cali.app", category: "CalendarService")
 
@@ -20,6 +21,7 @@ protocol CalendarServicing {
     func deleteEvent(accessToken: String, calendarId: String, eventId: String) async throws
     func fetchEvent(accessToken: String, calendarId: String, eventId: String) async throws -> CalendarEvent
     func updateEvent(accessToken: String, calendarId: String, eventId: String, request: UpdateEventRequest) async throws -> CalendarUpdateEventResponse
+    func fillSnapshots(accessToken: String, startDate: String, endDate: String, force: Bool) async throws -> SnapshotFillResult
 }
 
 final class CalendarService: CalendarServicing {
@@ -239,7 +241,8 @@ final class CalendarService: CalendarServicing {
             }
 
             do {
-                let createResponse = try makeDecoder().decode(CalendarCreateEventResponse.self, from: data)
+                var createResponse = try makeDecoder().decode(CalendarCreateEventResponse.self, from: data)
+                createResponse.snapshot = Self.snapshotRecord(in: data)
                 calendarLogger.debug("✅ Created event: \(request.summary, privacy: .public)")
                 return createResponse
             } catch {
@@ -373,7 +376,8 @@ final class CalendarService: CalendarServicing {
             }
 
             do {
-                let updateResponse = try makeDecoder().decode(CalendarUpdateEventResponse.self, from: data)
+                var updateResponse = try makeDecoder().decode(CalendarUpdateEventResponse.self, from: data)
+                updateResponse.snapshot = Self.snapshotRecord(in: data)
                 calendarLogger.debug("✅ Updated event \(eventId, privacy: .public)")
                 return updateResponse
             } catch {
@@ -388,9 +392,44 @@ final class CalendarService: CalendarServicing {
             throw CalendarServiceError.network(error)
         }
     }
+
+    func fillSnapshots(accessToken: String, startDate: String, endDate: String, force: Bool) async throws -> SnapshotFillResult {
+        var urlRequest = try makeRequest(path: "/api/v1/calendars/snapshots/fill", accessToken: accessToken, method: "POST")
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: [
+            "start_date": startDate,
+            "end_date": endDate,
+            "force": force,
+        ])
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await urlSession.data(for: urlRequest)
+        } catch {
+            throw CalendarServiceError.network(error)
+        }
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw CalendarServiceError.http(-1)
+        }
+        guard 200..<300 ~= httpResponse.statusCode else {
+            if httpResponse.statusCode == 401 { throw CalendarServiceError.unauthorized }
+            calendarLogger.error("❌ HTTP \(httpResponse.statusCode) when loading days \(startDate, privacy: .public)–\(endDate, privacy: .public)")
+            throw CalendarServiceError.http(httpResponse.statusCode)
+        }
+        do {
+            // Rows keep their column names, so no snake-case conversion
+            return try JSONDecoder().decode(SnapshotFillResult.self, from: data)
+        } catch {
+            throw CalendarServiceError.decoding(error)
+        }
+    }
 }
 
 private extension CalendarService {
+    /// The `snapshot` row in an event response, keyed by column name as the snapshot store expects.
+    private static func snapshotRecord(in data: Data) -> [String: AnyJSON]? {
+        struct Envelope: Decodable { let snapshot: [String: AnyJSON]? }
+        return (try? JSONDecoder().decode(Envelope.self, from: data))?.snapshot
+    }
+
     func makeDecoder(convertFromSnakeCase: Bool = true) -> JSONDecoder {
         let decoder = JSONDecoder()
         if convertFromSnakeCase {

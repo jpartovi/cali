@@ -463,6 +463,10 @@ private final class MockCalendarService: CalendarServicing {
         )
     }
 
+    func fillSnapshots(accessToken: String, startDate: String, endDate: String, force: Bool) async throws -> SnapshotFillResult {
+        SnapshotFillResult(snapshots: [], complete: true)
+    }
+
     func updateEvent(
         accessToken: String,
         calendarId: String,

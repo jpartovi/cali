@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -109,17 +109,15 @@ def snapshot_events_for_user(user_id: str, start_date: date, end_date: date, tim
     """Events between start_date and end_date from calendar_event_snapshots, in the finder's format.
 
     The calendar listener keeps these rows in sync with Google (yesterday through 14
-    days ahead), so reading them is a ~70ms database query instead of a Google fetch.
-    Only visible calendars are included, matching the Google path.
+    days ahead, plus days loaded on demand), so reading them is a ~70ms database query
+    instead of a Google fetch. Only visible calendars are included, matching the Google path.
     """
     from datetime import timedelta
     from db.session import get_service_client
-    from domains.calendars.repository import CalendarRepository
 
     tz = ZoneInfo(timezone_name)
     window_start = datetime.combine(start_date, datetime.min.time(), tz)
     window_end = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tz)
-    calendars = {cal["google_calendar_id"]: cal.get("name") for cal in CalendarRepository().get_calendars(user_id)}
     rows = (
         get_service_client()
         .table("calendar_event_snapshots")
@@ -131,19 +129,44 @@ def snapshot_events_for_user(user_id: str, start_date: date, end_date: date, tim
         .execute()
         .data
     ) or []
+    return snapshot_rows_to_events(user_id, rows, timezone_name, start_date, end_date)
 
+
+def snapshot_rows_to_events(
+    user_id: str,
+    rows: List[Dict[str, Any]],
+    timezone_name: str,
+    first_day: Optional[date] = None,
+    last_day: Optional[date] = None,
+) -> List[Dict[str, Any]]:
+    """calendar_event_snapshots rows as events in the finder's format (visible calendars only).
+
+    With first_day/last_day, all-day events outside those dates are left out.
+    """
+    from domains.calendars.repository import CalendarRepository
+
+    tz = ZoneInfo(timezone_name)
+    calendars = {cal["google_calendar_id"]: cal.get("name") for cal in CalendarRepository().get_calendars(user_id)}
     events = []
     for row in rows:
         calendar_id = row.get("google_calendar_id")
-        if calendar_id not in calendars or not row.get("start_at") or not row.get("end_at"):
+        if row.get("status") == "cancelled" or calendar_id not in calendars:
+            continue
+        if not row.get("start_at") or not row.get("end_at"):
             continue
         start_at = datetime.fromisoformat(row["start_at"])
         end_at = datetime.fromisoformat(row["end_at"])
         if row.get("is_all_day"):
-            # Stored as midnight in the event's timezone; convert back to calendar dates
-            event_tz = ZoneInfo(row["timezone"]) if row.get("timezone") else tz
-            start = {"date": start_at.astimezone(event_tz).date().isoformat()}
-            end = {"date": end_at.astimezone(event_tz).date().isoformat()}
+            # Stored as midnight in the event's timezone, or UTC when it has none (see
+            # calendar_listener/snapshots.py); convert back to calendar dates
+            event_tz = ZoneInfo(row["timezone"]) if row.get("timezone") else timezone.utc
+            start_day = start_at.astimezone(event_tz).date()
+            end_day = end_at.astimezone(event_tz).date()
+            # The UTC row query reaches into the neighboring local days; keep only overlaps
+            if (first_day and end_day <= first_day) or (last_day and start_day > last_day):
+                continue
+            start = {"date": start_day.isoformat()}
+            end = {"date": end_day.isoformat()}
         else:
             start = {"dateTime": start_at.astimezone(tz).isoformat()}
             end = {"dateTime": end_at.astimezone(tz).isoformat()}
@@ -159,6 +182,31 @@ def snapshot_events_for_user(user_id: str, start_date: date, end_date: date, tim
         })
     events.sort(key=lambda e: e["start"].get("dateTime") or e["start"].get("date"))
     return events
+
+
+async def cached_events_for_user(
+    user_id: str, start_date: date, end_date: date, timezone_name: str
+) -> Optional[List[Dict[str, Any]]]:
+    """Events in the range from snapshots, loading any days not stored yet from Google first.
+
+    Loaded days stay in sync through the calendar listener, so the next request for them
+    (from the agent or the app) is a database read. None when the range is too long or a
+    visible calendar isn't synced, so the caller should read Google instead.
+    """
+    from domains.calendar_listener.service import MAX_FILL_DAYS, CalendarListenerService, run_off_event_loop
+
+    if (end_date - start_date).days + 1 > MAX_FILL_DAYS:
+        return None
+    result = await run_off_event_loop(
+        lambda: CalendarListenerService().fill_range(user_id, start_date, end_date, timezone_name)
+    )
+    if not result["complete"]:
+        return None
+    import asyncio
+
+    return await asyncio.to_thread(
+        snapshot_rows_to_events, user_id, result["snapshots"], timezone_name, start_date, end_date
+    )
 
 
 async def find_event_for_user(
@@ -187,14 +235,22 @@ async def find_event_for_user(
     tz = ZoneInfo(timezone_name)
     if events is None:
         fetch_start = time.time()
-        result = await CalendarService().events_for_date_range(
-            user_id=user_id,
-            start_date=start_date,
-            end_date=end_date,
-            timezone_name=timezone_name,
-        )
-        events = [e for e in result.get("events", []) if e.get("id") and e.get("calendar_id")]
-        log_step("backend.event_finder.fetch_events", time.time() - fetch_start, details=f"events={len(events)}")
+        source = "snapshots"
+        try:
+            events = await cached_events_for_user(user_id, start_date, end_date, timezone_name)
+        except Exception:
+            logger.exception("Snapshot read failed for find_event user=%s", user_id)
+            events = None
+        if events is None:
+            source = "google"
+            result = await CalendarService().events_for_date_range(
+                user_id=user_id,
+                start_date=start_date,
+                end_date=end_date,
+                timezone_name=timezone_name,
+            )
+            events = [e for e in result.get("events", []) if e.get("id") and e.get("calendar_id")]
+        log_step("backend.event_finder.fetch_events", time.time() - fetch_start, details=f"source={source} events={len(events)}")
 
     if not events:
         return {"status": "none", "event": None, "candidates": [], "confidence": 1.0, "event_count": 0, "jev_ms": 0, "top": []}

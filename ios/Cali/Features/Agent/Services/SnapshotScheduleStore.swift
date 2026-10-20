@@ -9,21 +9,80 @@ import Supabase
 
 private let snapshotLogger = Logger(subsystem: "com.cali.app", category: "SnapshotSchedule")
 
+extension Notification.Name {
+    /// Posted after the app shows or hides a calendar; userInfo has "googleCalendarId" and "isHidden"
+    static let calendarVisibilityChanged = Notification.Name("calendarVisibilityChanged")
+}
+
+/// The schedule, read from `calendar_event_snapshots`, which the backend keeps in sync with Google.
+///
+/// The live window (yesterday through two weeks ahead) loads at start. Days around the visible
+/// ones then load through the backend, which lists any it doesn't have from Google once and keeps
+/// them in sync from then on.
+/// Realtime applies changes row by row; after a reconnect or a return to the foreground the store
+/// catches up on rows changed since the newest one it has seen, instead of reloading everything.
 @MainActor
 final class SnapshotScheduleStore {
     var onEventsChanged: (([DisplayEvent]) -> Void)?
+    /// Days (start of day in `timeZone`) being loaded from the backend
+    var onLoadingDaysChanged: ((Set<Date>) -> Void)?
+    /// The user's timezone, which day boundaries follow (the backend uses the same one)
+    var timeZone: TimeZone = .autoupdatingCurrent {
+        didSet { if timeZone != oldValue { loadedDays.removeAll() } }
+    }
 
     private let client: SupabaseClient
+    private let calendarService: CalendarServicing
     private var snapshotsById: [UUID: EventSnapshotRow] = [:]
     private var calendarsById: [UUID: CalendarMetaRow] = [:]
+    private var displayCache: [UUID: DisplayEvent] = [:]
+    /// Days loaded through the backend this session; Realtime keeps them current
+    private var loadedDays = Set<Date>()
+    private var loadingDays = Set<Date>() {
+        didSet { if loadingDays != oldValue { onLoadingDaysChanged?(loadingDays) } }
+    }
+    /// Newest `updated_at` seen, where a catch-up starts
+    private var newestUpdate: Date?
     private var channel: RealtimeChannelV2?
     private var realtimeSubscriptions = Set<RealtimeSubscription>()
     private var isStarted = false
+    private var hasLoadedWindow = false
     private var startTask: Task<Void, Error>?
     private var realtimeTask: Task<Void, Never>?
+    private var publishTask: Task<Void, Never>?
+    private var visibilityObserver: NSObjectProtocol?
+    private var channelWasSubscribed = false
 
-    init(client: SupabaseClient? = nil) {
+    /// Matches the backend's listener window (calendar_listener/snapshots.py HORIZON_*)
+    private static let liveWindowPast: TimeInterval = 24 * 60 * 60
+    private static let liveWindowFuture: TimeInterval = 14 * 24 * 60 * 60
+    /// Days loaded on either side of the visible ones, so short swipes find them ready
+    private static let prefetchDays = 7
+    /// The backend loads at most this many days per request
+    private static let maxFillDays = 62
+    /// Rows written within this long before the newest seen are re-read on catch-up (commit lag)
+    private static let catchUpOverlap: TimeInterval = 5
+
+    init(client: SupabaseClient? = nil, calendarService: CalendarServicing? = nil) {
         self.client = client ?? AuthTokenProvider.shared.client
+        self.calendarService = calendarService ?? CalendarService()
+        visibilityObserver = NotificationCenter.default.addObserver(
+            forName: .calendarVisibilityChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let googleCalendarId = note.userInfo?["googleCalendarId"] as? String,
+                  let isHidden = note.userInfo?["isHidden"] as? Bool else { return }
+            MainActor.assumeIsolated {
+                self?.applyVisibility(googleCalendarId: googleCalendarId, isHidden: isHidden)
+            }
+        }
+    }
+
+    deinit {
+        if let visibilityObserver {
+            NotificationCenter.default.removeObserver(visibilityObserver)
+        }
     }
 
     func start() async throws {
@@ -47,7 +106,7 @@ final class SnapshotScheduleStore {
     /// Realtime keeps the schedule live, but joining a channel can stall for a long time
     /// (e.g. during a Supabase Realtime incident), so loading never waits on it: the schedule
     /// comes from `refresh()`, and Realtime connects here in the background, retrying with
-    /// backoff. Once connected it refreshes again to pick up anything that changed meanwhile.
+    /// backoff. Once connected it catches up on anything that changed meanwhile.
     private func connectRealtimeInBackground() {
         guard realtimeTask == nil, !isStarted else { return }
         realtimeTask = Task { @MainActor [weak self] in
@@ -68,26 +127,102 @@ final class SnapshotScheduleStore {
         }
     }
 
+    /// Load the live window the first time; afterwards fetch only rows changed since the newest seen.
     func refresh() async throws {
-        let session = try await client.auth.session
-        let userId = session.user.id.uuidString.lowercased()
-
+        let userId = try await currentUserId()
         let calendars: [CalendarMetaRow] = try await client
             .from("calendars")
             .select("id,google_calendar_id,color,is_hidden")
             .eq("user_id", value: userId)
             .execute()
             .value
+        replaceCalendars(calendars)
 
-        let snapshots: [EventSnapshotRow] = try await client
-            .from("calendar_event_snapshots")
-            .select()
-            .eq("user_id", value: userId)
-            .execute()
-            .value
+        if hasLoadedWindow, let newestUpdate {
+            let since = newestUpdate.addingTimeInterval(-Self.catchUpOverlap)
+            let changed: [EventSnapshotRow] = try await fetchAllRows { query in
+                query.gt("updated_at", value: SnapshotJSON.string(from: since))
+            }
+            changed.forEach(store)
+            snapshotLogger.debug("Caught up on \(changed.count, privacy: .public) changed snapshots")
+        } else {
+            let now = Date()
+            let windowStart = now.addingTimeInterval(-Self.liveWindowPast)
+            let windowEnd = now.addingTimeInterval(Self.liveWindowFuture)
+            let rows: [EventSnapshotRow] = try await fetchAllRows { query in
+                query
+                    .gte("end_at", value: SnapshotJSON.string(from: windowStart))
+                    .lt("start_at", value: SnapshotJSON.string(from: windowEnd))
+            }
+            rows.forEach(store)
+            hasLoadedWindow = true
+        }
+        publish()
+    }
 
-        calendarsById = Dictionary(uniqueKeysWithValues: calendars.map { ($0.id, $0) })
-        snapshotsById = Dictionary(uniqueKeysWithValues: snapshots.map { ($0.id, $0) })
+    /// Make sure the days around the visible ones are loaded, fetching any that aren't.
+    func ensureDays(firstVisible: Date, visibleCount: Int) async {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timeZone
+        let first = calendar.startOfDay(for: firstVisible)
+        let span = max(visibleCount, 1) + Self.prefetchDays * 2
+        let days = (0..<span).compactMap {
+            calendar.date(byAdding: .day, value: $0 - Self.prefetchDays, to: first)
+        }
+        // Live-window days too, once a session: they show at once from the initial load, but
+        // calendars Google can't watch (e.g. holidays) only reach snapshots this way
+        let missing = days.filter { !loadedDays.contains($0) && !loadingDays.contains($0) }
+        guard let start = missing.min(), let end = missing.max() else { return }
+        // Load the whole span between the missing days (already-loaded ones are a cheap read)
+        let requested = days.filter { $0 >= start && $0 <= end }
+        guard requested.count <= Self.maxFillDays else { return }
+        await fill(days: requested, calendar: calendar, force: false)
+    }
+
+    private func fill(days: [Date], calendar: Calendar, force: Bool) async {
+        guard let first = days.first, let last = days.last,
+              let token = await AuthTokenProvider.shared.currentAccessToken() else { return }
+        loadingDays.formUnion(days)
+        defer { loadingDays.subtract(days) }
+        let formatter = SnapshotJSON.dayFormatter(timeZone: calendar.timeZone)
+        do {
+            let result = try await calendarService.fillSnapshots(
+                accessToken: token,
+                startDate: formatter.string(from: first),
+                endDate: formatter.string(from: last),
+                force: force
+            )
+            for record in result.snapshots {
+                if let row = decodeRow(record) { store(row) }
+            }
+            if result.complete {
+                loadedDays.formUnion(days)
+            }
+            publish()
+        } catch {
+            snapshotLogger.error("Loading days failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    /// Show a row the backend just stored for an edit made in the app, without waiting for Realtime.
+    func apply(record: [String: AnyJSON]) {
+        guard let row = decodeRow(record) else { return }
+        store(row)
+        publish()
+    }
+
+    /// Hide an event the app just deleted (and, for a series, its occurrences).
+    func markDeleted(googleCalendarId: String, googleEventId: String) {
+        let ids = snapshotsById.values
+            .filter {
+                $0.googleCalendarId == googleCalendarId
+                    && ($0.googleEventId == googleEventId || $0.recurringEventId == googleEventId)
+            }
+            .map(\.id)
+        for id in ids {
+            snapshotsById[id]?.status = "cancelled"
+            displayCache.removeValue(forKey: id)
+        }
         publish()
     }
 
@@ -101,6 +236,31 @@ final class SnapshotScheduleStore {
             await channel.unsubscribe()
         }
         channel = nil
+    }
+
+    private func currentUserId() async throws -> String {
+        let session = try await client.auth.session
+        return session.user.id.uuidString.lowercased()
+    }
+
+    /// Page through snapshot rows (PostgREST returns at most 1000 per request).
+    private func fetchAllRows(
+        _ filter: (PostgrestFilterBuilder) -> PostgrestFilterBuilder
+    ) async throws -> [EventSnapshotRow] {
+        let userId = try await currentUserId()
+        let pageSize = 1000
+        var rows: [EventSnapshotRow] = []
+        while true {
+            let page: [EventSnapshotRow] = try await filter(
+                client.from("calendar_event_snapshots").select().eq("user_id", value: userId)
+            )
+            .order("id")
+            .range(from: rows.count, to: rows.count + pageSize - 1)
+            .execute()
+            .value
+            rows.append(contentsOf: page)
+            if page.count < pageSize { return rows }
+        }
     }
 
     private func subscribe() async throws {
@@ -137,6 +297,25 @@ final class SnapshotScheduleStore {
         }
         snapshotLogger.info("Subscribed to calendar snapshots for \(userId, privacy: .public)")
         self.channel = channel
+
+        // The channel rejoins by itself after a dropped connection; changes made while it was
+        // down never arrive as events, so catch up on them when it is back
+        channelWasSubscribed = true
+        channel.onStatusChange { [weak self] status in
+            let store = self
+            Task { @MainActor in
+                store?.channelStatusChanged(status)
+            }
+        }
+        .store(in: &realtimeSubscriptions)
+    }
+
+    private func channelStatusChanged(_ status: RealtimeChannelStatus) {
+        let rejoined = status == .subscribed && !channelWasSubscribed
+        channelWasSubscribed = status == .subscribed
+        if rejoined {
+            Task { try? await refresh() }
+        }
     }
 
     private func listenToPostgresChanges(
@@ -161,25 +340,39 @@ final class SnapshotScheduleStore {
     private func applySnapshotChange(_ change: AnyAction) {
         switch change {
         case .insert(let action):
-            upsertSnapshot(from: action.record)
+            if let row = decodeRow(action.record) { store(row) }
         case .update(let action):
-            upsertSnapshot(from: action.record)
+            if let row = decodeRow(action.record) { store(row) }
         case .delete(let action):
-            if let row = try? EventSnapshotRow.decode(from: action.oldRecord) {
-                snapshotsById.removeValue(forKey: row.id)
-            } else if let id = EventSnapshotRow.id(from: action.oldRecord) {
+            if let id = (try? EventSnapshotRow.decode(from: action.oldRecord))?.id
+                ?? EventSnapshotRow.id(from: action.oldRecord) {
                 snapshotsById.removeValue(forKey: id)
+                displayCache.removeValue(forKey: id)
             }
         }
-        publish()
+        schedulePublish()
     }
 
-    private func upsertSnapshot(from record: [String: AnyJSON]) {
+    private func decodeRow(_ record: [String: AnyJSON]) -> EventSnapshotRow? {
         do {
-            let row = try EventSnapshotRow.decode(from: record)
-            snapshotsById[row.id] = row
+            return try EventSnapshotRow.decode(from: record)
         } catch {
-            snapshotLogger.error("Dropped realtime snapshot: \(error.localizedDescription, privacy: .public)")
+            snapshotLogger.error("Dropped snapshot row: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
+    /// Keep a row unless the store already has a newer version of it.
+    private func store(_ row: EventSnapshotRow) {
+        if let existing = snapshotsById[row.id],
+           let existingUpdate = existing.updatedAt, let rowUpdate = row.updatedAt,
+           existingUpdate > rowUpdate {
+            return
+        }
+        snapshotsById[row.id] = row
+        displayCache.removeValue(forKey: row.id)
+        if let updated = row.updatedAt, newestUpdate.map({ updated > $0 }) ?? true {
+            newestUpdate = updated
         }
     }
 
@@ -195,36 +388,80 @@ final class SnapshotScheduleStore {
             } else if let id = CalendarMetaRow.id(from: action.oldRecord) {
                 calendarsById.removeValue(forKey: id)
             }
+            displayCache.removeAll()
         }
-        publish()
+        schedulePublish()
     }
 
     private func upsertCalendar(from record: [String: AnyJSON]) {
         do {
-            let row = try CalendarMetaRow.decode(from: record)
-            calendarsById[row.id] = row
+            upsertCalendar(try CalendarMetaRow.decode(from: record))
         } catch {
             snapshotLogger.error("Dropped realtime calendar: \(error.localizedDescription, privacy: .public)")
         }
     }
 
+    private func replaceCalendars(_ calendars: [CalendarMetaRow]) {
+        let next = Dictionary(uniqueKeysWithValues: calendars.map { ($0.id, $0) })
+        let becameVisible = next.contains { id, row in
+            !row.isHidden && (calendarsById[id]?.isHidden ?? true)
+        }
+        if !calendarsById.isEmpty, becameVisible { loadedDays.removeAll() }
+        if next.mapValues(\.color) != calendarsById.mapValues(\.color) { displayCache.removeAll() }
+        calendarsById = next
+    }
+
+    private func applyVisibility(googleCalendarId: String, isHidden: Bool) {
+        guard let row = calendarsById.values.first(where: { $0.googleCalendarId == googleCalendarId }) else { return }
+        upsertCalendar(row.with(isHidden: isHidden))
+        publish()
+    }
+
+    private func upsertCalendar(_ row: CalendarMetaRow) {
+        let previous = calendarsById[row.id]
+        calendarsById[row.id] = row
+        if previous?.color != row.color { displayCache.removeAll() }
+        if previous == nil || (previous?.isHidden == true && !row.isHidden) {
+            // Days loaded before don't include this calendar's events yet
+            loadedDays.removeAll()
+        }
+    }
+
+    /// Realtime changes arrive in bursts (a day loading, a series changing): publish once per burst.
+    private func schedulePublish() {
+        guard publishTask == nil else { return }
+        publishTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            self?.publishTask = nil
+            self?.publish()
+        }
+    }
+
     private func publish() {
+        publishTask?.cancel()
+        publishTask = nil
         let calendarByGoogleId = Dictionary(
-            uniqueKeysWithValues: calendarsById.values.map { ($0.googleCalendarId, $0) }
-        )
-        let hiddenGoogleIds = Set(
-            calendarByGoogleId.values.compactMap { $0.isHidden ? $0.googleCalendarId : nil }
+            calendarsById.values.map { ($0.googleCalendarId, $0) },
+            uniquingKeysWith: { first, _ in first }
         )
 
-        let events = snapshotsById.values.compactMap { snapshot -> DisplayEvent? in
-            guard snapshot.status != "cancelled" else { return nil }
-            guard !hiddenGoogleIds.contains(snapshot.googleCalendarId) else { return nil }
+        var events: [DisplayEvent] = []
+        events.reserveCapacity(snapshotsById.count)
+        for (id, snapshot) in snapshotsById {
+            guard snapshot.status != "cancelled" else { continue }
+            guard calendarByGoogleId[snapshot.googleCalendarId]?.isHidden != true else { continue }
+            if let cached = displayCache[id] {
+                events.append(cached)
+                continue
+            }
             let event = snapshot.asCalendarEvent(
                 calendarColor: calendarByGoogleId[snapshot.googleCalendarId]?.color
             )
-            return DisplayEvent(event: event)
+            let display = DisplayEvent(event: event)
+            displayCache[id] = display
+            events.append(display)
         }
-        .sorted { lhs, rhs in
+        events.sort { lhs, rhs in
             SnapshotScheduleMapping.startDate(of: lhs) < SnapshotScheduleMapping.startDate(of: rhs)
         }
 
@@ -232,11 +469,22 @@ final class SnapshotScheduleStore {
     }
 }
 
-private struct CalendarMetaRow: Decodable {
+private struct CalendarMetaRow: Decodable, Equatable {
     let id: UUID
     let googleCalendarId: String
     let color: String?
     let isHidden: Bool
+
+    func with(isHidden: Bool) -> CalendarMetaRow {
+        CalendarMetaRow(id: id, googleCalendarId: googleCalendarId, color: color, isHidden: isHidden)
+    }
+
+    init(id: UUID, googleCalendarId: String, color: String?, isHidden: Bool) {
+        self.id = id
+        self.googleCalendarId = googleCalendarId
+        self.color = color
+        self.isHidden = isHidden
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -258,7 +506,8 @@ private struct EventSnapshotRow: Decodable {
     let id: UUID
     let googleCalendarId: String
     let googleEventId: String
-    let status: String
+    let recurringEventId: String?
+    var status: String
     let title: String?
     let location: String?
     let startAt: Date?
@@ -268,11 +517,13 @@ private struct EventSnapshotRow: Decodable {
     let organizerEmail: String?
     let attendees: [SnapshotAttendee]
     let isPhotoWorthy: Bool
+    let updatedAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case id
         case googleCalendarId = "google_calendar_id"
         case googleEventId = "google_event_id"
+        case recurringEventId = "recurring_event_id"
         case status
         case title
         case location
@@ -283,6 +534,7 @@ private struct EventSnapshotRow: Decodable {
         case organizerEmail = "organizer_email"
         case attendees
         case isPhotoWorthy = "is_photo_worthy"
+        case updatedAt = "updated_at"
     }
 
     init(from decoder: Decoder) throws {
@@ -290,6 +542,7 @@ private struct EventSnapshotRow: Decodable {
         id = try container.decode(UUID.self, forKey: .id)
         googleCalendarId = try container.decode(String.self, forKey: .googleCalendarId)
         googleEventId = try container.decode(String.self, forKey: .googleEventId)
+        recurringEventId = try container.decodeIfPresent(String.self, forKey: .recurringEventId)
         status = try container.decodeIfPresent(String.self, forKey: .status) ?? "confirmed"
         title = try container.decodeIfPresent(String.self, forKey: .title)
         location = try container.decodeIfPresent(String.self, forKey: .location)
@@ -300,6 +553,7 @@ private struct EventSnapshotRow: Decodable {
         organizerEmail = try container.decodeIfPresent(String.self, forKey: .organizerEmail)
         attendees = try container.decodeIfPresent([SnapshotAttendee].self, forKey: .attendees) ?? []
         isPhotoWorthy = try container.decodeIfPresent(Bool.self, forKey: .isPhotoWorthy) ?? true
+        updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)
     }
 
     static func decode(from record: [String: AnyJSON]) throws -> EventSnapshotRow {
@@ -400,6 +654,19 @@ private enum SnapshotJSON {
             record["organizer_self"] = .bool(["true", "t", "1"].contains(raw.lowercased()))
         }
         return record
+    }
+
+    static func string(from date: Date) -> String {
+        fractional.string(from: date)
+    }
+
+    static func dayFormatter(timeZone: TimeZone) -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
     }
 
     static func parseDate(_ value: String) -> Date? {

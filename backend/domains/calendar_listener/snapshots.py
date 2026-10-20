@@ -9,8 +9,11 @@ from zoneinfo import ZoneInfo
 from domains.calendar_listener.photo_worthiness import PhotoMomentInput, evaluate_photo_worthiness
 
 
+# The live window the listener always keeps: listed from Google on bootstrap and daily
 HORIZON_PAST = timedelta(days=1)
 HORIZON_FUTURE = timedelta(days=14)
+# Days outside the window stay in snapshots (kept live by the watch) while someone views them
+COVERAGE_TTL = timedelta(days=60)
 
 
 def _parse_datetime(value: Any) -> Optional[datetime]:

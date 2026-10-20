@@ -235,6 +235,12 @@ final class CalendarAccountsViewModel: ObservableObject {
                 calendarId: calendar.id,
                 isHidden: newIsHidden
             )
+            // Show or hide its events on the schedule now, not when Realtime reports the change
+            NotificationCenter.default.post(
+                name: .calendarVisibilityChanged,
+                object: nil,
+                userInfo: ["googleCalendarId": updatedCalendar.googleCalendarId, "isHidden": updatedCalendar.isHidden]
+            )
             
             // Update the calendar in the local accounts array
             accounts = accounts.map { account in

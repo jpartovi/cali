@@ -26,6 +26,8 @@ from domains.calendars.schemas import (
     CalendarEvent,
     UpdateEventRequest,
     UpdateEventResponse,
+    SnapshotFillRequest,
+    SnapshotFillResponse,
 )
 from domains.calendars.service import CalendarService
 from domains.calendars.repository import CalendarRepository
@@ -381,6 +383,77 @@ async def get_schedule(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+async def _store_app_write(user_id: str, result: Dict[str, Any], timezone_name: str) -> Dict[str, Any] | None:
+    """Write the event Google returned into snapshots now, instead of waiting for the webhook."""
+    from domains.calendar_listener.service import CalendarListenerService, run_off_event_loop
+
+    raw, account_id, calendar_id = result.get("raw"), result.get("account_id"), result.get("calendar_id")
+    if not isinstance(raw, dict) or not account_id or not calendar_id:
+        return None
+    start = time.time()
+    try:
+        return await run_off_event_loop(
+            lambda: CalendarListenerService().apply_app_write(
+                user_id=user_id,
+                google_account_id=account_id,
+                google_calendar_id=calendar_id,
+                event=raw,
+                timezone_name=timezone_name,
+            )
+        )
+    except Exception:
+        # The Google write succeeded; the listener's sync will still store it
+        logger.exception("Snapshot write-through failed user=%s event=%s", user_id, raw.get("id"))
+        return None
+    finally:
+        log_step("backend.api.calendars.store_app_write", time.time() - start)
+
+
+async def _store_app_delete(user_id: str, calendar_id: str, event_id: str) -> None:
+    from domains.calendar_listener.service import CalendarListenerService, run_off_event_loop
+
+    try:
+        await run_off_event_loop(
+            lambda: CalendarListenerService().apply_app_delete(
+                user_id=user_id, google_calendar_id=calendar_id, google_event_id=event_id
+            )
+        )
+    except Exception:
+        logger.exception("Snapshot delete-through failed user=%s event=%s", user_id, event_id)
+
+
+@router.post("/snapshots/fill", response_model=SnapshotFillResponse)
+async def fill_snapshots(
+    payload: SnapshotFillRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> SnapshotFillResponse:
+    """Load the user's events for a range of local dates into snapshots and return them."""
+    from domains.calendar_listener.service import CalendarListenerService, run_off_event_loop
+
+    start = time.time()
+    user_timezone = get_user_timezone(current_user.id)
+    try:
+        result = await run_off_event_loop(
+            lambda: CalendarListenerService().fill_range(
+                current_user.id,
+                payload.start_date,
+                payload.end_date,
+                user_timezone,
+                force=payload.force,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except GoogleCalendarAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    log_step(
+        "backend.api.calendars.fill_snapshots",
+        time.time() - start,
+        details=f"days={(payload.end_date - payload.start_date).days + 1} rows={len(result['snapshots'])} force={payload.force}",
+    )
+    return SnapshotFillResponse(**result)
+
+
 @router.post("/events", response_model=CreateEventResponse, status_code=status.HTTP_201_CREATED)
 async def create_event(
     payload: CreateEventRequest,
@@ -403,7 +476,8 @@ async def create_event(
             attendees=payload.attendees,
             timezone_name=user_timezone,
         )
-        return CreateEventResponse(event=CalendarEvent(**result))
+        snapshot = await _store_app_write(current_user.id, result, user_timezone)
+        return CreateEventResponse(event=CalendarEvent(**result), snapshot=snapshot)
     except GoogleCalendarUserError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except GoogleCalendarAuthError as exc:
@@ -454,6 +528,7 @@ async def delete_event(
             calendar_id=calendar_id,
             event_id=event_id,
         )
+        await _store_app_delete(current_user.id, calendar_id, event_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     except GoogleCalendarUserError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -516,7 +591,8 @@ async def update_event(
             remove_attendees=payload.remove_attendees,
             timezone_name=user_timezone,
         )
-        return UpdateEventResponse(event=CalendarEvent(**result))
+        snapshot = await _store_app_write(current_user.id, result, user_timezone)
+        return UpdateEventResponse(event=CalendarEvent(**result), snapshot=snapshot)
     except GoogleCalendarUserError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except GoogleCalendarAuthError as exc:

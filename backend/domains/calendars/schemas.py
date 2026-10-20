@@ -304,6 +304,8 @@ class CreateEventRequest(BaseModel):
 
 class CreateEventResponse(BaseModel):
     event: CalendarEvent
+    # The calendar_event_snapshots row now stored for the event, for the app to show at once
+    snapshot: Optional[Dict[str, Any]] = None
 
 
 class UpdateEventRequest(BaseModel):
@@ -327,3 +329,17 @@ class UpdateEventRequest(BaseModel):
 
 class UpdateEventResponse(BaseModel):
     event: CalendarEvent
+    snapshot: Optional[Dict[str, Any]] = None
+
+
+class SnapshotFillRequest(BaseModel):
+    start_date: date
+    end_date: date
+    # Re-list every day from Google instead of trusting stored rows
+    force: bool = False
+
+
+class SnapshotFillResponse(BaseModel):
+    snapshots: List[Dict[str, Any]]
+    # False when a visible calendar isn't synced yet, so its events are missing
+    complete: bool

@@ -11,6 +11,7 @@ of the events on either side.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta
@@ -18,6 +19,8 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from core.timing_logger import log_step
+
+logger = logging.getLogger(__name__)
 
 # Most blocks returned; the agent only needs enough to pick from
 MAX_BLOCKS = 20
@@ -38,10 +41,6 @@ def _day_edge(day, at: Optional[dtime], tz: ZoneInfo) -> datetime:
     if at is None:
         return datetime.combine(day + timedelta(days=1), dtime(0, 0), tz)
     return datetime.combine(day, at, tz)
-
-# calendar_event_snapshots covers yesterday through this many days ahead (calendar listener horizon)
-SNAPSHOT_DAYS_AHEAD = 14
-
 
 @dataclass
 class _Busy:
@@ -184,22 +183,22 @@ async def find_free_time_for_user(
     latest: Optional[dtime] = DEFAULT_LATEST,
 ) -> Dict[str, Any]:
     """Load the user's events around the range and return its free blocks (see free_blocks)."""
-    import asyncio
-
     from domains.calendars.service import CalendarService
-    from services.event_finder import snapshot_events_for_user
+    from services.event_finder import cached_events_for_user
 
     tz = ZoneInfo(timezone_name)
     # A day either side, so events just outside the range still count toward the buffer
     fetch_from = start_time.astimezone(tz).date() - timedelta(days=1)
     fetch_to = end_time.astimezone(tz).date() + timedelta(days=1)
-    today = datetime.now(tz).date()
 
     fetch_start = time.time()
-    if fetch_from >= today - timedelta(days=1) and fetch_to <= today + timedelta(days=SNAPSHOT_DAYS_AHEAD):
-        source = "snapshots"
-        events = await asyncio.to_thread(snapshot_events_for_user, user_id, fetch_from, fetch_to, timezone_name)
-    else:
+    source = "snapshots"
+    try:
+        events = await cached_events_for_user(user_id, fetch_from, fetch_to, timezone_name)
+    except Exception:
+        logger.exception("Snapshot read failed for free time user=%s", user_id)
+        events = None
+    if events is None:
         source = "google"
         result = await CalendarService().events_for_date_range(
             user_id=user_id, start_date=fetch_from, end_date=fetch_to, timezone_name=timezone_name,

@@ -242,6 +242,8 @@ struct SwipeableScheduleView: View {
     
     // Events and callbacks
     let events: [DisplayEvent]
+    /// Days (start of day) whose events are still loading, marked in their header
+    let loadingDays: Set<Date>
     let onVisibleDaysChanged: ((Date) -> Void)?
     @Binding var scrollToNowTrigger: Int
     @Binding var scrollTarget: ScheduleScrollTarget?
@@ -302,6 +304,7 @@ struct SwipeableScheduleView: View {
         referenceDate: Date,
         numberOfDays: Int = 3,
         events: [DisplayEvent] = [],
+        loadingDays: Set<Date> = [],
         userTimezone: String? = nil,
         modalBottomPadding: CGFloat = 0,
         onVisibleDaysChanged: ((Date) -> Void)? = nil,
@@ -313,6 +316,7 @@ struct SwipeableScheduleView: View {
     ) {
         self.userTimezone = userTimezone
         self.events = events
+        self.loadingDays = loadingDays
         self.onVisibleDaysChanged = onVisibleDaysChanged
         self._scrollToNowTrigger = scrollToNowTrigger
         self._scrollTarget = scrollTarget
@@ -1103,20 +1107,28 @@ struct SwipeableScheduleView: View {
             ForEach(0..<totalDayCount, id: \.self) { dayIndex in
                 let date = dateForDayIndex(dayIndex)
                 let isTodayColumn = isToday(date)
-                Text(dateHeaderFormatter.string(from: date))
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(isTodayColumn ? ColorPalette.Text.inverted : ColorPalette.Text.secondary)
-                    // Today's label sits in a small orange pill
-                    .padding(.horizontal, isTodayColumn ? 6 : 0)
-                    .padding(.vertical, isTodayColumn ? 2 : 0)
-                    .background {
-                        if isTodayColumn {
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(ColorPalette.Semantic.primary)
+                HStack(spacing: 4) {
+                    Text(dateHeaderFormatter.string(from: date))
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(isTodayColumn ? ColorPalette.Text.inverted : ColorPalette.Text.secondary)
+                        // Today's label sits in a small orange pill
+                        .padding(.horizontal, isTodayColumn ? 6 : 0)
+                        .padding(.vertical, isTodayColumn ? 2 : 0)
+                        .background {
+                            if isTodayColumn {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(ColorPalette.Semantic.primary)
+                            }
                         }
+                    // Not loaded yet, so an empty day isn't mistaken for a free one
+                    if loadingDays.contains(date) {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .accessibilityLabel("Loading events")
                     }
-                    .frame(width: dayColumnWidth, height: 22, alignment: .leading)
-                    .transition(.identity)
+                }
+                .frame(width: dayColumnWidth, height: 22, alignment: .leading)
+                .transition(.identity)
             }
         }
         .accessibilityIdentifier("schedule-date-header")

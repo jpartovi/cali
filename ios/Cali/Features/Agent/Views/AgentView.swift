@@ -33,6 +33,7 @@ struct AgentView: View {
                 referenceDate: viewModel.scheduleDate,
                 numberOfDays: viewModel.numberOfDays,
                 events: viewModel.displayEvents,
+                loadingDays: viewModel.loadingDays,
                 userTimezone: viewModel.userTimezone,
                 modalBottomPadding: scheduleModalPadding,
                 onVisibleDaysChanged: { date in
@@ -176,6 +177,7 @@ struct AgentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 viewModel.syncLiveActivities()
+                viewModel.refreshScheduleOnForeground()
             }
         }
         .onAppear {
