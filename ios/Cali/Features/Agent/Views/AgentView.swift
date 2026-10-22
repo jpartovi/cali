@@ -54,9 +54,12 @@ struct AgentView: View {
         }
         .overlay(alignment: .top) {
             if let details = detailsModalContent {
-                EventDetailsModal(event: details.event, original: details.original)
-                    .padding(.top, 8)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                GeometryReader { geometry in
+                    // Leave the lower part of the screen for the schedule and the agent modal
+                    EventDetailsModal(event: details.event, original: details.original, maxHeight: geometry.size.height * 0.6)
+                        .padding(.top, 8)
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .onChange(of: selectedEventForDetails) { oldValue, newValue in

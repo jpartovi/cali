@@ -11,6 +11,8 @@ struct EventDetailsModal: View {
     let event: CalendarEvent
     /// For a pending update, the event as it is now: changed details show the new value with the old one struck through
     var original: CalendarEvent? = nil
+    /// Tallest the card may grow; longer details scroll
+    var maxHeight: CGFloat? = nil
     @ObservedObject private var contactDirectory = ContactDirectory.shared
     
     private let cornerRadius: CGFloat = 22
@@ -49,91 +51,17 @@ struct EventDetailsModal: View {
                             .padding(.horizontal, horizontalPadding)
                     }
                     
-                    VStack(alignment: .leading, spacing: 12) {
-                        // Date/Time section
-                        let dateTimeInfo = formatDateTime(for: event)
-                        if let dateTimeInfo {
-                            detailRow(
-                                icon: "calendar",
-                                title: dateTimeInfo,
-                                previous: previousValue(dateTimeInfo, original.flatMap(formatDateTime(for:)))
-                            )
+                    // Long details scroll under the fixed title rather than growing the card past its cap
+                    ViewThatFits(in: .vertical) {
+                        details
+                        ScrollView {
+                            details
                         }
-                        
-                        // Location section
-                        if let location = event.location, !location.isEmpty {
-                            detailRow(
-                                icon: "mappin.circle.fill",
-                                title: location,
-                                previous: previousValue(location, original?.location)
-                            )
-                        }
-                        
-                        // Description section
-                        if let description = event.description, !description.isEmpty {
-                            detailRow(
-                                icon: "text.alignleft",
-                                title: description,
-                                isMultiline: true,
-                                previous: previousValue(description, original?.description)
-                            )
-                        }
-                        
-                        // Attendees section (for an update, including the guests it removes)
-                        if !event.attendees.isEmpty || !removedAttendees.isEmpty {
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "person.2.fill")
-                                        .font(.system(size: 14))
-                                        .foregroundStyle(ColorPalette.Text.secondary)
-                                        .frame(width: 18)
-                                    
-                                    Text("Attendees")
-                                        .font(.system(size: 13, weight: .semibold))
-                                        .foregroundColor(ColorPalette.Text.secondary)
-                                }
-                                
-                                ForEach(Array(event.attendees.enumerated()), id: \.offset) { _, attendee in
-                                    attendeeRow(attendee: attendee, change: isAdded(attendee) ? .added : nil)
-                                        .padding(.leading, 26)
-                                }
-
-                                ForEach(Array(removedAttendees.enumerated()), id: \.offset) { _, attendee in
-                                    attendeeRow(attendee: attendee, change: .removed)
-                                        .padding(.leading, 26)
-                                }
-                            }
-                        }
-                        
-                        // Conference/Meeting link section
-                        if let conference = event.conference {
-                            if let hangoutLink = conference.hangoutLink {
-                                detailRow(
-                                    icon: "video.fill",
-                                    title: "Join Meeting",
-                                    action: {
-                                        UIApplication.shared.open(hangoutLink)
-                                    }
-                                )
-                            } else if !conference.entryPoints.isEmpty {
-                                if let firstEntryPoint = conference.entryPoints.first,
-                                   let uri = firstEntryPoint.uri {
-                                    detailRow(
-                                        icon: "video.fill",
-                                        title: firstEntryPoint.label ?? "Join Meeting",
-                                        action: {
-                                            UIApplication.shared.open(uri)
-                                        }
-                                    )
-                                }
-                            }
-                        }
+                        .scrollIndicators(.visible)
                     }
-                    .padding(.horizontal, horizontalPadding)
-                    .padding(.vertical, 12)
                 }
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: maxHeight)
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
             .shadow(
                 color: Color.black.opacity(0.1),
@@ -148,6 +76,92 @@ struct EventDetailsModal: View {
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
     
+    /// Everything below the title
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Date/Time section
+            let dateTimeInfo = formatDateTime(for: event)
+            if let dateTimeInfo {
+                detailRow(
+                    icon: "calendar",
+                    title: dateTimeInfo,
+                    previous: previousValue(dateTimeInfo, original.flatMap(formatDateTime(for:)))
+                )
+            }
+            
+            // Location section
+            if let location = event.location, !location.isEmpty {
+                detailRow(
+                    icon: "mappin.circle.fill",
+                    title: location,
+                    previous: previousValue(location, original?.location)
+                )
+            }
+            
+            // Description section
+            if let description = event.description, !description.isEmpty {
+                detailRow(
+                    icon: "text.alignleft",
+                    title: description,
+                    isMultiline: true,
+                    previous: previousValue(description, original?.description)
+                )
+            }
+            
+            // Attendees section (for an update, including the guests it removes)
+            if !event.attendees.isEmpty || !removedAttendees.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "person.2.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(ColorPalette.Text.secondary)
+                            .frame(width: 18)
+                        
+                        Text("Attendees")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(ColorPalette.Text.secondary)
+                    }
+                    
+                    ForEach(Array(event.attendees.enumerated()), id: \.offset) { _, attendee in
+                        attendeeRow(attendee: attendee, change: isAdded(attendee) ? .added : nil)
+                            .padding(.leading, 26)
+                    }
+
+                    ForEach(Array(removedAttendees.enumerated()), id: \.offset) { _, attendee in
+                        attendeeRow(attendee: attendee, change: .removed)
+                            .padding(.leading, 26)
+                    }
+                }
+            }
+            
+            // Conference/Meeting link section
+            if let conference = event.conference {
+                if let hangoutLink = conference.hangoutLink {
+                    detailRow(
+                        icon: "video.fill",
+                        title: "Join Meeting",
+                        action: {
+                            UIApplication.shared.open(hangoutLink)
+                        }
+                    )
+                } else if !conference.entryPoints.isEmpty {
+                    if let firstEntryPoint = conference.entryPoints.first,
+                       let uri = firstEntryPoint.uri {
+                        detailRow(
+                            icon: "video.fill",
+                            title: firstEntryPoint.label ?? "Join Meeting",
+                            action: {
+                                UIApplication.shared.open(uri)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, 12)
+    }
+
     private enum AttendeeChange {
         case added
         case removed
@@ -237,7 +251,7 @@ struct EventDetailsModal: View {
                     detailText(title, size: 13)
                         .font(.system(size: 13, weight: previous != nil ? .semibold : .regular))
                         .foregroundColor(previous != nil ? changeColor : ColorPalette.Text.primary)
-                        .lineLimit(isMultiline ? 3 : 2)
+                        .lineLimit(isMultiline ? nil : 2)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
