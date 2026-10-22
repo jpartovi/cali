@@ -121,7 +121,7 @@ def snapshot_events_for_user(user_id: str, start_date: date, end_date: date, tim
     rows = (
         get_service_client()
         .table("calendar_event_snapshots")
-        .select("google_event_id,google_calendar_id,status,title,location,start_at,end_at,is_all_day,timezone,self_response")
+        .select("google_event_id,google_calendar_id,status,title,description,location,start_at,end_at,is_all_day,timezone,self_response,attendees")
         .eq("user_id", user_id)
         .neq("status", "cancelled")
         .gte("end_at", window_start.isoformat())
@@ -175,12 +175,16 @@ def snapshot_rows_to_events(
             "calendar_id": calendar_id,
             "calendar_name": calendars[calendar_id],
             "summary": row.get("title"),
+            "description": row.get("description"),
             "location": row.get("location"),
+            "status": row.get("status"),
             "start": start,
             "end": end,
             "self_response": row.get("self_response"),
+            "attendees": row.get("attendees") or [],
         })
-    events.sort(key=lambda e: e["start"].get("dateTime") or e["start"].get("date"))
+    # Same order as CalendarService: timed events by start, then all-day events
+    events.sort(key=lambda e: (0, e["start"]["dateTime"]) if "dateTime" in e["start"] else (1, e["start"]["date"]))
     return events
 
 

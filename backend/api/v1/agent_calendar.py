@@ -7,6 +7,7 @@ and return data in the format expected by agent tools.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import List, Dict, Any
 from zoneinfo import ZoneInfo
@@ -14,6 +15,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from core.dependencies import AuthenticatedUser, get_current_user, get_user_timezone
+from core.timing_logger import log_step
 from domains.calendars.service import CalendarService
 from domains.calendars.schemas import ScheduleRequest
 from services import agent_calendar_service
@@ -154,25 +156,31 @@ async def get_schedule(
         # Get user timezone
         user_timezone = get_user_timezone(current_user.id)
         
-        # Use CalendarService which aggregates across ALL calendars
-        service = CalendarService()
+        # Snapshots first (a database read once the days are loaded); Google when the
+        # range is too long to cache or a calendar's listing failed
+        from services.event_finder import cached_events_for_user
+
+        fetch_start = time.time()
+        source = "snapshots"
         try:
-            result = await service.events_for_date_range(
-            user_id=current_user.id,
-            start_date=start_date,
-            end_date=end_date,
-            timezone_name=user_timezone,
+            events = await cached_events_for_user(current_user.id, start_date, end_date, user_timezone)
+        except Exception:
+            logger.exception("Snapshot read failed for schedule user=%s", current_user.id)
+            events = None
+        if events is None:
+            source = "google"
+            result = await CalendarService().events_for_date_range(
+                user_id=current_user.id,
+                start_date=start_date,
+                end_date=end_date,
+                timezone_name=user_timezone,
             )
-        except Exception as e:
-            # Re-raise HTTPExceptions, but wrap other errors
-            if isinstance(e, HTTPException):
-                raise
-            logger.error(f"Error in events_for_date_range: {e}", exc_info=True)
-            raise
-        
+            events = result.get("events", [])
+        log_step("backend.agent_calendar.schedule.fetch_events", time.time() - fetch_start, details=f"source={source} events={len(events)}")
+
         # Format events for agent tools - ensure both id and calendar_id are present
         formatted_events = []
-        for event in result.get("events", []):
+        for event in events:
             event_id = event.get("id")
             calendar_id = event.get("calendar_id")
             
@@ -188,7 +196,7 @@ async def get_schedule(
                 "end": event.get("end"),
                 "calendar_id": calendar_id,
                 "calendar_name": event.get("calendar_name"),
-                "location": event.get("raw", {}).get("location"),
+                "location": event.get("location"),
                 "status": event.get("status"),
             })
         

@@ -115,6 +115,7 @@ def snapshot_from_google_event(
     organizer_email = organizer.get("email") if isinstance(organizer, dict) else None
     title = event.get("summary")
     location = event.get("location")
+    description = event.get("description")
     etag = event.get("etag")
     ical_uid = event.get("iCalUID")
     recurring_event_id = event.get("recurringEventId")
@@ -141,6 +142,7 @@ def snapshot_from_google_event(
         "recurring_event_id": recurring_event_id if isinstance(recurring_event_id, str) else None,
         "title": title.strip() if isinstance(title, str) else None,
         "location": location if isinstance(location, str) else None,
+        "description": description if isinstance(description, str) and description else None,
         "start_at": start_at.isoformat() if start_at else None,
         "end_at": end_at.isoformat() if end_at else None,
         "is_all_day": is_all_day,
