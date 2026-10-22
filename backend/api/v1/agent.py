@@ -43,10 +43,11 @@ transcription_service = TranscriptionService()
 REQUEST_CLASSIFIER_TIMEOUT_SECONDS = 2.0
 
 
-async def _classify_request_kind(query_text: str) -> Optional[str]:
-    """Stage 1 pre-pass: the request kind when Jev is sure of it, else None (agent uses its full prompt)."""
+async def _classify_request(query_text: str) -> tuple[Optional[str], bool]:
+    """Stage 1 pre-pass: (the request kind when Jev is sure of it, else None (agent uses its full prompt),
+    whether the request refers to past events)."""
     if not get_settings().agent_request_classifier:
-        return None
+        return None, False
     from services.request_classifier import classify_request
 
     start = time.time()
@@ -55,18 +56,18 @@ async def _classify_request_kind(query_text: str) -> Optional[str]:
     except Exception as e:
         logger.warning(f"Request classification skipped: {type(e).__name__}: {e}")
         log_step("backend.api.action.classify", time.time() - start, details=f"skipped={type(e).__name__}")
-        return None
+        return None, False
     kind = result["kind"] if result["sure"] and result["kind"] != "other" else None
     log_step(
         "backend.api.action.classify",
         time.time() - start,
-        details=f"kind={result['kind']} p={result['probability']} used={kind is not None} jev_ms={result['jev_ms']}",
+        details=f"kind={result['kind']} p={result['probability']} used={kind is not None} looks_back={result['looks_back']} jev_ms={result['jev_ms']}",
     )
     logger.info(
-        f"Request kind: {result['kind']} p={result['probability']} used={kind is not None} "
+        f"Request kind: {result['kind']} p={result['probability']} used={kind is not None} looks_back={result['looks_back']} "
         f"seconds={time.time() - start:.2f} jev_ms={result['jev_ms']} probabilities={result['probabilities']}"
     )
-    return kind
+    return kind, result["looks_back"]
 
 
 # Stage 2: only these kinds act on an existing event, so only they look one up
@@ -79,16 +80,30 @@ PREPASS_EVENT_DAYS_BACK = 1
 PREPASS_EVENT_DAYS_AHEAD = 30
 # Searched first from calendar_event_snapshots (the calendar listener's horizon); the rest of the window on a miss
 PREPASS_SNAPSHOT_DAYS_AHEAD = 13
+# How far back a request that refers to past events ("the people from last week's dinner") is searched
+PREPASS_PAST_DAYS = 42
 PREPASS_EVENT_TIMEOUT_SECONDS = 4.0
 
 
-async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optional[str], user_timezone: str) -> Optional[dict]:
-    """Event pre-pass: the events a request refers to (and the one it acts on), else None."""
-    if request_kind not in EVENT_KINDS or not get_settings().agent_prepass_event:
-        return None
-    from datetime import timedelta
+async def _events_in_range(user_id: str, start_date, end_date, user_timezone: str) -> tuple[list, str]:
+    """(events between the dates in the finder's format, source): snapshots, loading days not stored
+    yet (so the next request for them is a database read), else Google."""
     from domains.calendars.service import CalendarService
-    from services.event_finder import cached_events_for_user, find_request_events, snapshot_events_for_user
+    from services.event_finder import cached_events_for_user
+
+    events = await cached_events_for_user(user_id, start_date, end_date, user_timezone)
+    if events is not None:
+        return events, "snapshots_filled"
+    result = await CalendarService().events_for_date_range(
+        user_id=user_id, start_date=start_date, end_date=end_date, timezone_name=user_timezone,
+    )
+    return [e for e in result.get("events", []) if e.get("id") and e.get("calendar_id")], "google"
+
+
+async def _find_current_events(user_id: str, query_text: str, request_kind: str, user_timezone: str) -> Optional[dict]:
+    """The events from yesterday on that the request refers to (and the one it acts on), else None."""
+    from datetime import timedelta
+    from services.event_finder import find_request_events, snapshot_events_for_user
 
     today = datetime.now(ZoneInfo(user_timezone)).date()
     start_date = today - timedelta(days=PREPASS_EVENT_DAYS_BACK)
@@ -105,16 +120,8 @@ async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optio
         if found["status"] in ("match", "ambiguous") or found["mentioned"] or request_kind not in EXISTING_EVENT_KINDS:
             end_date = snapshot_end
             return found
-        # 2) Nothing there: search the full window, loading days not stored yet into the
-        # snapshots (so the next request for them is a database read), else from Google
-        source = "snapshots_filled"
-        events = await cached_events_for_user(user_id, start_date, end_date, user_timezone)
-        if events is None:
-            source = "google"
-            result = await CalendarService().events_for_date_range(
-                user_id=user_id, start_date=start_date, end_date=end_date, timezone_name=user_timezone,
-            )
-            events = [e for e in result.get("events", []) if e.get("id") and e.get("calendar_id")]
+        # 2) Nothing there: search the full window
+        events, source = await _events_in_range(user_id, start_date, end_date, user_timezone)
         return await find_request_events(user_id, query_text, events, user_timezone)
 
     try:
@@ -144,6 +151,66 @@ async def _find_prepass_event(user_id: str, query_text: str, request_kind: Optio
         "top": top,
         "mentioned": mentioned,
     }
+
+
+async def _find_past_events(user_id: str, query_text: str, user_timezone: str) -> Optional[dict]:
+    """The past events the request refers to ("the people from last week's dinner"), else None."""
+    from datetime import timedelta
+    from services.event_finder import find_past_events
+
+    today = datetime.now(ZoneInfo(user_timezone)).date()
+    start_date, end_date = today - timedelta(days=PREPASS_PAST_DAYS), today - timedelta(days=1)
+    start = time.time()
+    source = ""
+
+    async def lookup() -> dict:
+        nonlocal source
+        events, source = await _events_in_range(user_id, start_date, end_date, user_timezone)
+        return await find_past_events(user_id, query_text, events, user_timezone)
+
+    try:
+        result = await asyncio.wait_for(lookup(), timeout=PREPASS_EVENT_TIMEOUT_SECONDS)
+    except Exception as e:
+        logger.warning(f"Pre-pass past event lookup skipped: {type(e).__name__}: {e}")
+        log_step("backend.api.action.prepass_past_events", time.time() - start, details=f"skipped={type(e).__name__}")
+        return None
+    mentioned = result.get("mentioned") or []
+    log_step(
+        "backend.api.action.prepass_past_events",
+        time.time() - start,
+        details=f"source={source} events={result['event_count']} mentioned={len(mentioned)} jev_ms={result['jev_ms']}",
+    )
+    logger.info(
+        f"Pre-pass past events: source={source} events={result['event_count']} seconds={time.time() - start:.2f} "
+        f"mentioned={[(e.get('summary'), e.get('when'), e.get('probability')) for e in mentioned]}"
+    )
+    return {"searched_from": start_date.isoformat(), "searched_to": end_date.isoformat(), "mentioned": mentioned}
+
+
+async def _find_prepass_event(
+    user_id: str, query_text: str, request_kind: Optional[str], user_timezone: str, looks_back: bool = False
+) -> Optional[dict]:
+    """Event pre-pass: the events a request refers to (and the one it acts on), else None.
+
+    A request that refers to past events also gets the ones it means from the last few weeks
+    ("earlier"), searched alongside.
+    """
+    if not get_settings().agent_prepass_event:
+        return None
+    current, past = await asyncio.gather(
+        _find_current_events(user_id, query_text, request_kind, user_timezone) if request_kind in EVENT_KINDS else asyncio.sleep(0),
+        _find_past_events(user_id, query_text, user_timezone) if looks_back else asyncio.sleep(0),
+    )
+    earlier = (past or {}).get("mentioned") or []
+    if not current and not earlier:
+        return current
+    result = current or {"status": None, "top": [], "mentioned": []}
+    if earlier:
+        # Yesterday is in both windows
+        seen = {e.get("id") for e in [*result["top"], *result["mentioned"]]}
+        result["earlier"] = [e for e in earlier if e.get("id") not in seen]
+        result["earlier_from"], result["earlier_to"] = past["searched_from"], past["searched_to"]
+    return result
 
 
 PREPASS_TIME_TIMEOUT_SECONDS = 4.0
@@ -389,11 +456,11 @@ async def agent_action(
         # pre-pass doesn't need the kind, so it runs alongside both stages
         calendars_task = asyncio.create_task(asyncio.to_thread(_writable_calendars, current_user.id))
         people_task = asyncio.create_task(_find_prepass_people(current_user.id, query_text, user_timezone))
-        request_kind = await _classify_request_kind(query_text)
+        request_kind, looks_back = await _classify_request(query_text)
         # A follow-up's events and times depend on what it follows ("move it after philosophy": which
         # philosophy depends on when the lunch is), so those pre-passes read the conversation so far
         context_text = agent_conversations.follow_up_text(conversation, query_text) if conversation else query_text
-        prepass_event = await _find_prepass_event(current_user.id, context_text, request_kind, user_timezone)
+        prepass_event = await _find_prepass_event(current_user.id, context_text, request_kind, user_timezone, looks_back)
         prepass_time = await _find_prepass_time(current_user.id, context_text, request_kind, user_timezone)
         prepass_people = await people_task  # Never raises: failures come back as None
         # The kinds of request the prompt covers: a follow-up may change its proposal or ask for something else

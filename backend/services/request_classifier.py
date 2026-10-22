@@ -11,7 +11,7 @@ import logging
 import time
 from typing import Any, Dict
 
-from typesafe_sdk import Choice, TypeSafeError
+from typesafe_sdk import Choice, Noul, TypeSafeError
 
 from core.config import get_settings
 from core.timing_logger import log_step
@@ -34,6 +34,8 @@ REQUEST_KINDS: Dict[str, str] = {
 
 # Below this, the kind is treated as unsure and the pre-pass adds nothing
 KIND_MIN_PROBABILITY = 0.6
+# At or above this, the request refers to past events and the event pre-pass also searches back
+LOOKS_BACK_MIN_PROBABILITY = 0.5
 
 JEV_TIMEOUT_SECONDS = 10.0
 
@@ -51,6 +53,7 @@ async def classify_request(text: str) -> Dict[str, Any]:
       probability: the chosen kind's probability
       probabilities: every kind's probability, highest first
       confidence: Jev's overall confidence for the answer
+      looks_back: True when the request refers to events that already happened
       jev_ms: time spent waiting on Jev
     """
     settings = get_settings()
@@ -65,6 +68,16 @@ async def classify_request(text: str) -> Dict[str, Any]:
                 "kind": Choice(
                     instructions="What is this calendar assistant request asking for?",
                     criteria=REQUEST_KINDS,
+                ),
+                # Asked in the same call so the event pre-pass knows whether to search the past too
+                "looks_back": Noul(
+                    instructions=(
+                        "Does the request draw on events that already happened: one past event, or what usually "
+                        "happens at events of some kind? E.g. to reuse who was at them, when or where they were, or "
+                        "to repeat one (\"the people from last week's dinner\", \"my usual tennis group\", "
+                        "\"the regulars from book club\", \"when was my last haircut\", \"same place as our "
+                        "previous meeting\"). No if it only mentions upcoming events or none."
+                    )
                 ),
             },
             timeout=JEV_TIMEOUT_SECONDS,
@@ -84,5 +97,6 @@ async def classify_request(text: str) -> Dict[str, Any]:
         "probability": round(probability, 3),
         "probabilities": {k: round(p, 3) for k, p in ranked},
         "confidence": round(answer.confidence, 3),
+        "looks_back": response.nouls["looks_back"].noul >= LOOKS_BACK_MIN_PROBABILITY,
         "jev_ms": jev_ms,
     }

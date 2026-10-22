@@ -105,6 +105,14 @@ class MockClient(CalendarClient):
         """Mock: the free-time search runs in the backend, so report nothing found."""
         return {"blocks": [], "block_count": 0, "note": "Free time search isn't available with the mock calendar."}
 
+    async def find_people(
+        self,
+        names: str,
+        auth: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Mock: the people lookup runs in the backend, so report nobody found."""
+        return {"status": "none", "people": [], "ambiguous": [], "maybe": []}
+
     async def read_event(
         self,
         event_id: str,

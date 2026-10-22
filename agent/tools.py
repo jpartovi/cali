@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 from datetime import date, datetime
 from typing import List, Dict, Any, Optional
 from langchain_core.tools import tool
@@ -46,6 +47,18 @@ def _optional(value: Optional[str]) -> Optional[str]:
     return text
 
 
+# Invisible characters models sometimes slip into copied addresses
+_INVISIBLE = re.compile(r"[\u200b-\u200f\u2060\ufeff\s]")
+# "Name <email>", the way guest lists are shown to the model
+_ANGLE_EMAIL = re.compile(r"<([^<>]+@[^<>]+)>")
+
+
+def _clean_email(raw: Optional[str]) -> str:
+    text = _optional(raw) or ""
+    match = _ANGLE_EMAIL.search(text)
+    return _INVISIBLE.sub("", match.group(1) if match else text).lower()
+
+
 def _attendees(emails: Optional[List[str]], names_without_email: Optional[List[str]] = None) -> List[EventAttendee]:
     """Guests from a tool call, cleaned and de-duplicated (placeholders dropped).
 
@@ -53,7 +66,7 @@ def _attendees(emails: Optional[List[str]], names_without_email: Optional[List[s
     """
     seen: List[str] = []
     for raw in emails or []:
-        email = (_optional(raw) or "").lower()
+        email = _clean_email(raw)
         if "@" in email and email not in seen:
             seen.append(email)
     names: List[str] = []
@@ -591,6 +604,33 @@ def find_event(description: str, start_time: str, end_time: str) -> Dict[str, An
 
 
 @tool
+def find_people(names: str) -> Dict[str, Any]:
+    """
+    Look up people by name among the user's contacts and the people they've had events with.
+
+    Use it for anyone the request involves who isn't in PEOPLE IN THIS REQUEST, e.g. a name
+    the automatic lookup missed. Several names can go in one call.
+
+    Args:
+        names: The people's names as the user said them (e.g. "Henry", "Sam Lee and Ana")
+
+    Returns:
+        Dict with "status" ("found" | "none" | "error") and, like PEOPLE IN THIS REQUEST:
+        - "people": who the names most likely mean, with display_name, email (null when the
+          contact has no email on file) and how the user knows them
+        - "ambiguous": groups of people sharing a name where it's unclear which is meant
+        - "maybe": low-confidence matches (don't invite these)
+    """
+    try:
+        auth = get_auth_context()
+        client = get_calendar_client()
+        return _run_async(client.find_people(names, auth=auth))
+    except Exception as e:
+        logger.error(f"Error in find_people: {str(e)}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+@tool
 def find_free_time(
     start_time: str,
     end_time: str,
@@ -644,7 +684,7 @@ def find_free_time(
 # AGENT_FIND_EVENT=jev offers find_event (TypeSafe Jev picks the event) next to search_events
 FIND_EVENT_ENABLED = os.getenv("AGENT_FIND_EVENT", "").strip().lower() == "jev"
 
-INTERNAL_TOOLS = [read_schedule, search_events, read_event, list_calendars, find_free_time]
+INTERNAL_TOOLS = [read_schedule, search_events, read_event, list_calendars, find_free_time, find_people]
 if FIND_EVENT_ENABLED:
     INTERNAL_TOOLS.append(find_event)
 EXTERNAL_TOOLS = [

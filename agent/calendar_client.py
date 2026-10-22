@@ -92,6 +92,20 @@ class CalendarClient(ABC):
         pass
 
     @abstractmethod
+    async def find_people(
+        self,
+        names: str,
+        auth: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Look up people by name among the user's contacts and the people on their events.
+        
+        Returns:
+            Dict with status ("found" | "none"), people, ambiguous (same-name groups) and maybe
+        """
+        pass
+
+    @abstractmethod
     async def read_event(
         self,
         event_id: str,

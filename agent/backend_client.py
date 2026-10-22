@@ -284,6 +284,19 @@ class BackendClient(CalendarClient):
             json_data=payload,
         )
 
+    async def find_people(
+        self,
+        names: str,
+        auth: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Ask the backend who the names are among the user's contacts and event guests."""
+        return await self._make_request(
+            method="POST",
+            path="/api/v1/agent/calendars/people",
+            auth=auth,
+            json_data={"names": names},
+        )
+
     async def read_event(
         self,
         event_id: str,

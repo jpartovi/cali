@@ -395,6 +395,41 @@ async def find_event(
         ) from e
 
 
+@router.post("/people")
+async def find_people(
+    payload: Dict[str, Any],
+    current_user: AuthenticatedUser = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Look up people by name among the user's contacts and the people on their events.
+
+    Same lookup as the people pre-pass. Expects JSON body with:
+    - names: the people to find, as the user said them (e.g. "Henry and Sam Lee")
+
+    Returns status "found" or "none", with people (likely matches), ambiguous (groups
+    of same-name candidates) and maybe (low-confidence matches).
+    """
+    from services.people_finder import PeopleFinderNotConfigured, find_people_for_user
+    from typesafe_sdk import TypeSafeError
+
+    names = (payload.get("names") or "").strip()
+    if not names:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="names is required")
+    try:
+        result = await find_people_for_user(current_user.id, names, get_user_timezone(current_user.id))
+    except PeopleFinderNotConfigured as e:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="People finder is not configured") from e
+    except TypeSafeError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="People finder is unavailable. Please try again.") from e
+    except Exception as e:
+        logger.exception(f"Unexpected error finding people user_id={current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while finding people. Please try again.",
+        ) from e
+    return {key: result[key] for key in ("status", "people", "ambiguous", "maybe")}
+
+
 @router.post("/free")
 async def find_free_time(
     payload: Dict[str, Any],

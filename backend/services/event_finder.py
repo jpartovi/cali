@@ -91,6 +91,16 @@ def _option_for(event: Dict[str, Any], tz: ZoneInfo) -> Dict[str, Any]:
     return option
 
 
+def _guests(event: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The event's guests other than the user (Google attendee dicts), as {display_name, email}."""
+    guests = []
+    for attendee in event.get("attendees") or []:
+        if not isinstance(attendee, dict) or attendee.get("self") or attendee.get("resource") or not attendee.get("email"):
+            continue
+        guests.append({"display_name": attendee.get("displayName"), "email": attendee["email"]})
+    return guests
+
+
 def _public_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """Event fields returned to the agent (same shape as the search endpoint)."""
     return {
@@ -102,6 +112,7 @@ def _public_event(event: Dict[str, Any]) -> Dict[str, Any]:
         "start": event.get("start"),
         "end": event.get("end"),
         "location": event.get("location") or (event.get("raw") or {}).get("location"),
+        "guests": _guests(event),
     }
 
 
@@ -431,3 +442,95 @@ async def find_request_events(
         status = "ambiguous"
     return {"status": status, **base}
 
+
+
+# Past events the request refers back to: most this many are reported, highest first
+MAX_PAST_EVENTS = 8
+
+
+async def find_past_events(
+    user_id: str,
+    text: str,
+    events: List[Dict[str, Any]],
+    timezone_name: str,
+) -> Dict[str, Any]:
+    """The past events a request refers back to ("the people from last week's dinner", "same place as last time").
+
+    One yes/no question per event, asked in batches of MAX_MENTION_QUESTIONS side by side, so
+    weeks of past events can be searched at once. Unlike find_request_events' mention
+    question, it counts earlier events of the same kind under another title ("Barry's" for
+    "my last workout"). `events` are in the finder's format.
+
+    Returns a dict with:
+      mentioned: the past events the request likely means (probability >= MENTION_MIN_PROBABILITY),
+        the MAX_PAST_EVENTS likeliest, newest first
+      event_count, jev_ms
+    """
+    import asyncio
+
+    settings = get_settings()
+    if not settings.typesafe_api_key:
+        raise EventFinderNotConfigured("TYPESAFE_API_KEY is not set")
+    base: Dict[str, Any] = {"event_count": len(events), "jev_ms": 0, "mentioned": []}
+    if not events:
+        return base
+
+    tz = ZoneInfo(timezone_name)
+    now = datetime.now(tz)
+    keyed = {f"e{i}": event for i, event in enumerate(events)}
+    options = {key: _option_for(event, tz) for key, event in keyed.items()}
+    keys = list(keyed)
+    batches = [keys[i:i + MAX_MENTION_QUESTIONS] for i in range(0, len(keys), MAX_MENTION_QUESTIONS)]
+
+    async def ask(batch: List[str]) -> Dict[str, float]:
+        response = await get_jev_client().system_one(
+            state={
+                "request": text,
+                "now": now.strftime("%a %b %-d %Y, %-I:%M %p"),
+                "relative_dates": relative_dates_sheet(now, timezone_name),
+                "past_events": {key: f"{options[key]['title']} ({options[key]['when']})" for key in batch},
+            },
+            questions={
+                key: Noul(
+                    instructions=(
+                        f"The request refers back to something that already happened. Is past event {key} one "
+                        "it could mean? Yes if it names or describes the event, or is about an earlier event of "
+                        "the same kind and this is one, even under a different title (\"Barry's\" for \"my last "
+                        "workout\", \"Dinner @ Pammy's\" for \"the last dinner with Sam\"). When it means the last one (\"last time\", "
+                        "\"the previous one\"), the most recent of that kind is the likeliest."
+                    )
+                )
+                for key in batch
+            },
+            timeout=JEV_TIMEOUT_SECONDS,
+        )
+        return {key: response.nouls[key].noul for key in batch}
+
+    jev_start = time.time()
+    try:
+        answers = await asyncio.gather(*(ask(batch) for batch in batches))
+    except TypeSafeError:
+        logger.exception("Jev past events failed user_id=%s", user_id)
+        raise
+    jev_ms = round((time.time() - jev_start) * 1000)
+    log_step("backend.event_finder.past_events_jev", jev_ms / 1000, details=f"events={len(events)} batches={len(batches)}")
+    base["jev_ms"] = jev_ms
+
+    scores = sorted(((k, p) for answer in answers for k, p in answer.items()), key=lambda kv: kv[1], reverse=True)
+    likely = [(key, p) for key, p in scores if p >= MENTION_MIN_PROBABILITY][:MAX_PAST_EVENTS]
+    # Newest first: "the previous one" / "last time" usually means the most recent
+    likely.sort(key=lambda kv: _event_sort_key(keyed[kv[0]]), reverse=True)
+    base["mentioned"] = [
+        {
+            **_public_event(keyed[key]),
+            "when": _describe_when(keyed[key].get("start"), keyed[key].get("end"), tz),
+            "probability": round(p, 3),
+        }
+        for key, p in likely
+    ]
+    return base
+
+
+def _event_sort_key(event: Dict[str, Any]) -> str:
+    start = event.get("start") or {}
+    return start.get("dateTime") or start.get("date") or ""

@@ -11,6 +11,7 @@ _parent_dir = _current_file.parent.parent
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
+import ast
 import json
 import logging
 import re
@@ -74,7 +75,12 @@ def _build_agent_identity_section() -> str:
     You are a calendar scheduling agent. Your job is to process user queries about their 
     calendar and use the available tools to respond.
     
-    Note: the queries you recieve are trascribed from audio, so they may not be perfect - don't take everything literally."""
+    Note: the queries you recieve are trascribed from audio, so they may not be perfect - don't take everything literally.
+
+    Do what the user asked as fully as your tools allow. The automatic lookups below (PRE-ANALYSIS, PEOPLE IN THIS
+    REQUEST) are a head start, not everything there is: when the request needs an event, a person or a detail they
+    don't list, find it yourself with your tools before settling for less. Call do_nothing only when your tools
+    can't get what the request needs."""
 
 
 def _build_architecture_section() -> str:
@@ -142,13 +148,14 @@ INTERNAL TOOLS (for gathering information - do NOT terminate):
 - search_events(keywords, start_time, end_time): Find events matching keywords
 - read_event(event_id, calendar_id): Get full details of a specific event
 - list_calendars(): List all available calendars
+- find_people(names): Look up people by name among the user's contacts and the people they've had events with. Returns emails and how the user knows each one, in the same shape as PEOPLE IN THIS REQUEST
 - find_free_time(start_time, end_time, duration_minutes, buffer_minutes=0, earliest_time=None, latest_time=None): Free blocks where an event of that length fits, with buffer_minutes kept clear on each side. Each block lists earliest_start/latest_end and the events right before and after it. Only 5 AM to midnight of each day unless earliest_time/latest_time ("HH:MM") say otherwise
 
 EXTERNAL TOOLS (terminate agent and show results to user):
 - show_schedule(start_time, end_time): Display schedule to user
 - show_event(event_id, calendar_id): Display specific event to user
 - request_create_event(summary, calendar_id, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, attendee_emails=None, guests_without_email=None): Request to create event. Use start_time/end_time for timed events, or start_date/end_date for all-day events (e.g., birthdays, holidays). Only include description/location if explicitly requested or necessary. attendee_emails (and guests_without_email) invites guests (see GUESTS).
-- request_update_event(event_id, calendar_id, summary=None, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, add_attendee_emails=None, remove_attendee_emails=None, add_guests_without_email=None): Request to update event. Use start_time/end_time for timed events, or start_date/end_date for all-day events. Only include fields that need updating. Only include description if explicitly requested. add_attendee_emails/remove_attendee_emails/add_guests_without_email change the guest list (see GUESTS).
+- request_update_event(event_id, calendar_id, summary=None, start_time=None, end_time=None, start_date=None, end_date=None, description=None, location=None, add_attendee_emails=None, remove_attendee_emails=None, add_guests_without_email=None): Request to update event. Use start_time/end_time for timed events, or start_date/end_date for all-day events. Only include fields that need updating. Only include description if explicitly requested. add_attendee_emails/remove_attendee_emails/add_guests_without_email change the guest list (see GUESTS). NEVER call it without at least one change: an update that changes nothing is rejected. If you can't work out what to change, call do_nothing instead.
 - request_delete_event(event_id, calendar_id): Request to delete event
 - do_nothing(reason): Handle unsupported/unclear requests. reason is shown to the user: one short phrase, not first person ("No free time fits on Friday", not "I couldn't find any free time")"""
 
@@ -403,6 +410,12 @@ A PRE-ANALYSIS block may follow. An automatic search over the user's events (the
 - EVENTS THE REQUEST REFERS TO: every event it mentions, including reference points ("move my haircut to right
   after lunch" lists the haircut and lunch). Use their start and end times directly (e.g. start right when lunch
   ends) instead of searching for them: a keyword search often misses what it found.
+- EARLIER EVENTS THE REQUEST REFERS TO: past events it mentions, when the request looks back ("the people from last
+  week's dinner", "same place as last time"), most recent first. If the request needs something from one (its
+  guests, its place) and the most recent doesn't have it (e.g. no guests listed), use the most recent one that does.
+Each event lists its guests (other than the user) with their emails; use them directly when the request is about
+who was or is at an event. The block only covers the ranges it says it searched: if the request needs an event it
+doesn't list, find it with your tools.
 It matches on meaning, not just words: a title that doesn't repeat the user's words can still be right (e.g. "my workout" →
 "Barry's", a gym class; "philosophy" → "Phil Pset 5"). It may know what an unfamiliar title refers to when you don't, so a likely event with
 probability 0.9 or higher on the right day is the answer even if you can't tell from the title. Below that, trust it
@@ -422,10 +435,13 @@ _GUESTS_SECTION = """GUESTS (inviting people to events, or taking them off):
 - Creating an event with or for other people ("lunch with Henry", "set up a call with Rohan and Emily") invites them: pass their emails in attendee_emails. Events that only mention someone ("call mom", "pick up Sam") don't invite anyone unless the user asks.
 - Guests see the event's title on their own calendar, so a title must make sense to them too: leave out the names of the people you invite. "Lunch with Eli" with Eli invited → summary "Lunch" (Eli would otherwise see "Lunch with Eli"); "call with Rohan and Emily" inviting both → "Call". Keep names of people who aren't invited ("Dinner with Sam" if only Henry is invited). The same goes for any new title you give an event that has guests.
 - "Invite / add X to <event>" → request_update_event with add_attendee_emails; "remove / take X off <event>" → remove_attendee_emails. Changing other fields doesn't touch the guest list.
-- Only use emails from the PEOPLE IN THIS REQUEST section, or an email address the user said outright. Never guess or make up an address.
-- If the section lists a person as unclear between several people, invite the most likely one.
-- Never invite someone the section only lists under "Possibly also (low confidence)" - unless the user gave their email outright, leave them off.
-- To invite someone the section lists with "no email on file", pass their name in guests_without_email (add_guests_without_email for an update), not in the email list - the app asks the user for their email. Someone who isn't listed at all: still make the event, without them.
+- Adding the people from another event ("invite everyone from Tuesday's meeting"): pass that event's whole guest list. Anyone already on the event you're updating is left out automatically, so don't work out who's new yourself.
+- Where to get guests' emails: PEOPLE IN THIS REQUEST, find_people, the guests of an event (listed in PRE-ANALYSIS, or from read_event), or an address the user said outright. Never guess or make up an address.
+- PEOPLE IN THIS REQUEST only covers names an automatic lookup matched. For anyone else the request involves, look them up: find_people for someone named, an event's guests for people described by an event ("everyone from Tuesday's meeting"). Only leave someone off if those lookups come up empty.
+- People described by past events ("the people from last time", "my usual tennis group") are the guests of those past events, never of the event you're adding them to. If PRE-ANALYSIS lists no such earlier events, find them yourself: search_events over the past weeks, then read_event for their guests.
+- If a person is listed as unclear between several people, invite the most likely one.
+- Never invite someone listed only under "Possibly also (low confidence)" (or as a find_people maybe) - unless the user gave their email outright, leave them off.
+- To invite someone listed with "no email on file", pass their name in guests_without_email (add_guests_without_email for an update), not in the email list - the app asks the user for their email.
 - Guests get an email from Google Calendar when they're invited or taken off."""
 
 
@@ -475,7 +491,10 @@ def _build_people_section(prepass: Optional[Dict[str, Any]]) -> str:
             who += " - no email on file"
         return f"  - {who}: {person.get('details')} (probability {person.get('probability')})"
 
-    lines = ["PEOPLE IN THIS REQUEST (automatic; matched from the user's contacts and calendar - may be wrong)"]
+    lines = [
+        "PEOPLE IN THIS REQUEST (automatic; the names in the request matched against the user's contacts and calendar - "
+        "may be wrong, and only covers people named in the request)"
+    ]
     people = prepass.get("people") or []
     if people:
         lines.append("The request is talking about:")
@@ -487,7 +506,10 @@ def _build_people_section(prepass: Optional[Dict[str, Any]]) -> str:
     if maybe:
         lines.append("Possibly also (low confidence):")
         lines += [line(p) for p in maybe]
-    lines.append("Use these names and emails wherever the request involves these people.")
+    lines.append(
+        "Use these names and emails wherever the request involves these people. For anyone else it involves, look "
+        "them up yourself (find_people, or the guests of an event)."
+    )
     return "\n".join(lines)
 
 
@@ -513,13 +535,27 @@ def _event_time_iso(value: Any) -> str:
     return value or ""
 
 
+# Past this many guests an event's list is cut short (read_event has them all)
+MAX_PREPASS_GUESTS = 40
+
+
 def _prepass_event_lines(n: int, event: Dict[str, Any]) -> List[str]:
     calendar = event.get("calendar_name") or event.get("calendar_id")
-    return [
+    lines = [
         f'  {n}. "{event.get("summary")}" · {event.get("when")} · calendar: {calendar} (probability {event.get("probability")})',
         f'     event_id: {event.get("id")} · calendar_id: {event.get("calendar_id")}',
         f'     start: {_event_time_iso(event.get("start"))} · end: {_event_time_iso(event.get("end"))}',
     ]
+    guests = event.get("guests") or []
+    if guests:
+        listed = ", ".join(
+            f"{g['display_name']} <{g['email']}>" if g.get("display_name") else g["email"] for g in guests[:MAX_PREPASS_GUESTS]
+        )
+        more = f" and {len(guests) - MAX_PREPASS_GUESTS} more (read_event lists them all)" if len(guests) > MAX_PREPASS_GUESTS else ""
+        lines.append(f"     guests: {listed}{more}")
+    else:
+        lines.append("     guests: none listed")
+    return lines
 
 
 def _build_prepass_event_section(
@@ -528,26 +564,28 @@ def _build_prepass_event_section(
     """Per-request evidence from the event pre-pass (sent after the time context)"""
     if not prepass:
         return ""
+    earlier = prepass.get("earlier") or []
     if follow_up:
         # A follow-up usually acts on the proposal ("move it after philosophy"), which the search can't see, so
         # only a confident match is an existing event it acts on; with nothing found there's nothing to say
         top = (prepass.get("top") or [])[:1] if prepass.get("status") == "match" else []
-        if not top and not prepass.get("mentioned"):
+        if not top and not prepass.get("mentioned") and not earlier:
             return ""
         prepass = {**prepass, "top": top}
     creating = request_kind == "create_event"
     # A new event isn't any of these, so for creates only the referenced events matter
     top = [] if creating else (prepass.get("top") or [])
     mentioned = prepass.get("mentioned") or []
-    if creating and not mentioned:
+    searched = prepass.get("searched_from") is not None
+    if creating and not mentioned and not earlier:
         return ""
-    lines = [
-        "PRE-ANALYSIS (automatic; may be wrong - if it doesn't fit the request, use your tools)",
-        f"Searched {prepass.get('event_count', 0)} events from {prepass.get('searched_from')} to {prepass.get('searched_to')}.",
-    ]
-    if not top and not mentioned:
+    lines = ["PRE-ANALYSIS (automatic; may be wrong - if it doesn't fit the request, use your tools)"]
+    if searched:
+        lines.append(f"Searched {prepass.get('event_count', 0)} events from {prepass.get('searched_from')} to {prepass.get('searched_to')}.")
+    if earlier:
+        lines.append(f"Also searched past events from {prepass.get('earlier_from')} to {prepass.get('earlier_to')}.")
+    if searched and not top and not mentioned and not creating:
         lines.append("No event in that range matched the request. Don't search the same range again.")
-        return "\n".join(lines)
     if top:
         lines.append("EVENT THE REQUEST ACTS ON (most likely first):")
         for n, event in enumerate(top, 1):
@@ -556,7 +594,15 @@ def _build_prepass_event_section(
             lines.append("(The search leaned toward none of these being the event.)")
     if mentioned:
         lines.append("EVENTS THE REQUEST REFERS TO:")
+        listed = {event.get("id") for event in top}
         for n, event in enumerate(mentioned, 1):
+            if event.get("id") in listed:
+                lines.append(f'  {n}. "{event.get("summary")}" · {event.get("when")} (the event above)')
+            else:
+                lines += _prepass_event_lines(n, event)
+    if earlier:
+        lines.append("EARLIER EVENTS THE REQUEST REFERS TO (most recent first):")
+        for n, event in enumerate(earlier, 1):
             lines += _prepass_event_lines(n, event)
     return "\n".join(lines)
 
@@ -670,6 +716,7 @@ def _build_system_prompt(
             _build_tool_reference_section(),  # Includes calendar selection rules for write operations
             _build_query_patterns_section(),  # Includes calendar selection in CREATE/UPDATE/DELETE patterns
             _build_find_event_section(),  # Empty unless AGENT_FIND_EVENT=jev
+            _USING_PREPASS_SECTION,  # A request that looks back gets past events even when its kind is unsure
             _GUESTS_SECTION,
             _build_tool_result_processing_section(),
             _build_error_handling_section(),
@@ -1074,17 +1121,90 @@ def tool_execution_node(state: State) -> Dict[str, Any]:
 _EMAIL_IN_TEXT = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
-def _check_guests(result: Dict[str, Any], state: State) -> Optional[str]:
-    """Guests may only be people the pre-pass found or emails the user said outright.
+def _found_people_and_tool_text(messages: List[BaseMessage]) -> tuple[List[Dict[str, Any]], str]:
+    """(find_people results, the text of every other tool result) from the conversation so far."""
+    tool_names = {
+        call.get("id"): call.get("name")
+        for message in messages if isinstance(message, AIMessage)
+        for call in message.tool_calls or []
+    }
+    found: List[Dict[str, Any]] = []
+    other: List[str] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        if tool_names.get(message.tool_call_id) == "find_people":
+            try:
+                result = ast.literal_eval(str(message.content))  # Tool results are stored as str(dict)
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(result, dict):
+                found.append(result)
+        else:
+            other.append(str(message.content))
+    return found, "\n".join(other)
 
-    Fills in each guest's display name from the people pre-pass. Returns an error for the
-    agent when it invites an address from nowhere (removing one is harmless: the backend
-    only takes off guests who are on the event).
+
+def _prepass_event_guests(prepass: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Guests of every event the event pre-pass listed"""
+    prepass = prepass or {}
+    events = [*(prepass.get("top") or []), *(prepass.get("mentioned") or []), *(prepass.get("earlier") or [])]
+    return [guest for event in events for guest in event.get("guests") or []]
+
+
+def _already_on_event(metadata: Dict[str, Any], prepass: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Drops guests an update adds who are already on the event (when the pre-pass listed its guests).
+
+    Returns an error for the agent when that leaves the update changing nothing.
+    """
+    if not metadata.get("event_id") or not metadata.get("add_attendees"):
+        return None
+    prepass = prepass or {}
+    event = next(
+        (e for e in [*(prepass.get("top") or []), *(prepass.get("mentioned") or [])] if e.get("id") == metadata["event_id"]),
+        None,
+    )
+    if event is None:
+        return None
+    on_event = {(g.get("email") or "").lower() for g in event.get("guests") or []}
+    adding = metadata["add_attendees"]
+    metadata["add_attendees"] = [g for g in adding if (g.get("email") or "").lower() not in on_event or not g.get("email")]
+    if metadata["add_attendees"] or len(adding) == 0:
+        return None
+    if any(metadata.get(field) for field in ("summary", "start", "end", "description", "location", "remove_attendees")):
+        return None
+    others = {
+        (g.get("email") or "").lower()
+        for e in [*(prepass.get("mentioned") or []), *(prepass.get("earlier") or [])] if e.get("id") != metadata["event_id"]
+        for g in e.get("guests") or []
+    } - on_event - {""}
+    hint = (
+        f" The other events in PRE-ANALYSIS have {len(others)} guests who aren't on this event yet."
+        if others else ""
+    )
+    return (
+        "Validation failed: everyone you're adding is already on this event, so the update changes nothing. Check "
+        "whose guests you passed: if the request means another event's people, pass that event's guest list (people "
+        f"already on this event are left out automatically).{hint} Call do_nothing only if that adds nobody new."
+    )
+
+
+def _check_guests(result: Dict[str, Any], state: State) -> Optional[str]:
+    """Guests may only be people the agent was given or looked up, or emails the user said outright.
+
+    Known people come from the people pre-pass, find_people, the guests of events the pre-pass
+    listed, and any email in another tool result (e.g. a guest list from read_event). Fills in
+    each guest's display name from those. Returns an error for the agent when it invites an
+    address from nowhere (removing one is harmless: the backend only takes off guests who are
+    on the event).
     """
     metadata = result.get("metadata") or {}
+    found_people, tool_text = _found_people_and_tool_text(state.get("messages") or [])
     # A follow-up can also invite anyone its earlier requests talked about
-    sources = [state.get("prepass_people") or {}, state.get("history_people") or {}]
+    sources = [state.get("prepass_people") or {}, state.get("history_people") or {}, *found_people]
     known: Dict[str, Optional[str]] = {}
+    for guest in _prepass_event_guests(state.get("prepass_event")):
+        known[guest["email"].lower()] = guest.get("display_name")
     # Contacts with no email, by lowercased name: (contact_id, display_name)
     no_email: Dict[str, tuple] = {}
     # Low-confidence maybes can't be invited (only named, for a clearer error)
@@ -1098,6 +1218,7 @@ def _check_guests(result: Dict[str, Any], state: State) -> Optional[str]:
     # Emails the user typed, in this message or (for a follow-up) an earlier one
     said_text = " ".join(str(m.content) for m in state.get("messages") or [] if isinstance(m, HumanMessage))
     said = {email.lower() for email in _EMAIL_IN_TEXT.findall(f"{state.get('query') or ''} {said_text}")}
+    seen = {email.lower() for email in _EMAIL_IN_TEXT.findall(tool_text)}
 
     unknown = []
     unknown_names = []
@@ -1116,26 +1237,30 @@ def _check_guests(result: Dict[str, Any], state: State) -> Optional[str]:
                     unknown_names.append(guest.get("display_name") or "")
             elif email in known:
                 guest["display_name"] = guest.get("display_name") or known[email]
-            elif email not in said and key != "remove_attendees":
+            elif email not in said and email not in seen and key != "remove_attendees":
                 unknown.append(email)
             guests.append(guest)
         if key in metadata:
             metadata[key] = guests
+    already = _already_on_event(metadata, state.get("prepass_event"))
+    if already is not None:
+        return already
     unsure = [guest for guest in [*unknown, *unknown_names] if guest.strip().lower() in maybe]
     if unsure:
         return (
-            f"Validation failed: {', '.join(unsure)} is only a low-confidence maybe in PEOPLE IN THIS REQUEST. "
+            f"Validation failed: {', '.join(unsure)} is only a low-confidence maybe in PEOPLE IN THIS REQUEST or find_people. "
             "Don't invite maybes; leave them off and make the request with everyone else."
         )
     if unknown:
         return (
-            f"Validation failed: {', '.join(unknown)} isn't the email of anyone in PEOPLE IN THIS REQUEST, and the "
-            "user didn't say it. Only invite emails from that section or ones the user gave; leave out anyone else."
+            f"Validation failed: {', '.join(unknown)} isn't the email of anyone you were given or looked up, and the "
+            "user didn't say it. Only invite emails from PEOPLE IN THIS REQUEST, find_people, an event's guests, or "
+            "ones the user gave. Look up anyone else with find_people; never guess an address."
         )
     if unknown_names:
         return (
-            f"Validation failed: {', '.join(unknown_names)} isn't anyone PEOPLE IN THIS REQUEST lists with no email "
-            "on file. Only pass names from that section, spelled as it lists them, in guests_without_email; "
+            f"Validation failed: {', '.join(unknown_names)} isn't anyone PEOPLE IN THIS REQUEST or find_people lists "
+            "with no email on file. Only pass names from those, spelled as they list them, in guests_without_email; "
             "invite people with an email by their email, and leave out anyone else."
         )
     return None

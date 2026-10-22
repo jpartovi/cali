@@ -131,10 +131,25 @@ def validate_write_permissions(result: Dict[str, Any], auth: Dict[str, Any]) -> 
     return None  # Validation passed
 
 
+# Fields of an update-event request that change the event
+_UPDATE_FIELDS = ("summary", "start", "end", "description", "location", "add_attendees", "remove_attendees")
+
+
+def validate_update_changes_something(result: Dict[str, Any], auth: Dict[str, Any]) -> Optional[str]:
+    """An update must change at least one thing; an empty one shows the user a proposal with nothing in it."""
+    metadata = result.get("metadata") or {}
+    if any(metadata.get(field) for field in _UPDATE_FIELDS):
+        return None
+    return (
+        "Validation failed: this update changes nothing (no new title, time, description, location, or guests). "
+        "Include the change the user asked for, or if you can't work it out, call do_nothing with a short reason."
+    )
+
+
 # Validator registry: maps request types to their validation steps
 VALIDATORS: Dict[AgentResponseType, List[Validator]] = {
     AgentResponseType.CREATE_EVENT: [validate_write_permissions],
-    AgentResponseType.UPDATE_EVENT: [validate_write_permissions],
+    AgentResponseType.UPDATE_EVENT: [validate_update_changes_something, validate_write_permissions],
     AgentResponseType.DELETE_EVENT: [validate_write_permissions],
     # Future: Add validators for other types
     # AgentResponseType.SHOW_SCHEDULE: [validate_schedule_time_range],
