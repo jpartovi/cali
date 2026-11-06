@@ -330,7 +330,7 @@ struct SwipeableScheduleView: View {
             cal.timeZone = timeZone
             self.calendar = cal
         } else {
-            self.calendar = Calendar.autoupdatingCurrent
+            self.calendar = UserTimeZone.calendar
         }
         
         // Cache DateFormatters (expensive to create)

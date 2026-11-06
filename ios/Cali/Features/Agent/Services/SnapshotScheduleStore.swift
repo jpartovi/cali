@@ -27,7 +27,7 @@ final class SnapshotScheduleStore {
     /// Days (start of day in `timeZone`) being loaded from the backend
     var onLoadingDaysChanged: ((Set<Date>) -> Void)?
     /// The user's timezone, which day boundaries follow (the backend uses the same one)
-    var timeZone: TimeZone = .autoupdatingCurrent {
+    var timeZone: TimeZone = UserTimeZone.current {
         didSet { if timeZone != oldValue { loadedDays.removeAll() } }
     }
 
@@ -754,7 +754,7 @@ private enum SnapshotScheduleMapping {
         if let dateString = displayEvent.event.start?.date {
             let formatter = DateFormatter()
             formatter.dateFormat = "yyyy-MM-dd"
-            formatter.timeZone = .current
+            formatter.timeZone = UserTimeZone.current
             return formatter.date(from: dateString) ?? .distantFuture
         }
         return .distantFuture

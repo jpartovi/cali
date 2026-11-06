@@ -16,12 +16,14 @@ protocol ShowScheduleActionHandling {
 }
 
 struct ShowScheduleActionHandler: ShowScheduleActionHandling {
-    private let calendar: Calendar
+    private let injectedCalendar: Calendar?
+    /// The user's saved timezone, read at use since it can arrive after launch
+    private var calendar: Calendar { injectedCalendar ?? UserTimeZone.calendar }
 
     init(
-        calendar: Calendar = .autoupdatingCurrent
+        calendar: Calendar? = nil
     ) {
-        self.calendar = calendar
+        self.injectedCalendar = calendar
     }
 
     func configuration(for response: AgentResponse) -> ScheduleDisplayConfiguration {

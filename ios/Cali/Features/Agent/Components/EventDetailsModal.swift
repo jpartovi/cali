@@ -363,7 +363,7 @@ struct EventDetailsModal: View {
             return nil
         }
         
-        let calendar = Calendar.autoupdatingCurrent
+        let calendar = UserTimeZone.calendar
         let startText = "\(dayText(startDateTime, timeZone: calendar.timeZone, withYear: !isThisYear(calendar.component(.year, from: startDateTime)))), \(timeText(startDateTime))"
         let dayGap = calendar.dateComponents(
             [.day],
@@ -382,7 +382,7 @@ struct EventDetailsModal: View {
     }
     
     private func isThisYear(_ year: Int) -> Bool {
-        year == Calendar.autoupdatingCurrent.component(.year, from: Date())
+        year == UserTimeZone.calendar.component(.year, from: Date())
     }
     
     /// "Oct 16", or "Oct 16, 2027" with the year
@@ -398,6 +398,7 @@ struct EventDetailsModal: View {
     private func timeText(_ date: Date) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale.autoupdatingCurrent
+        formatter.timeZone = UserTimeZone.current
         formatter.dateStyle = .none
         formatter.timeStyle = .short
         return formatter.string(from: date)

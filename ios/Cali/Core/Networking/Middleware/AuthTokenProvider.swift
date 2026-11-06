@@ -131,6 +131,7 @@ final class AuthTokenProvider {
                 .value
             
             if let timezone = response.first?.timezone, !timezone.isEmpty {
+                UserTimeZone.save(timezone)
                 return timezone
             }
             return nil

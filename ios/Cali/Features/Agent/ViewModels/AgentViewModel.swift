@@ -38,7 +38,7 @@ final class AgentViewModel: ObservableObject {
     /// Days (start of day) whose events are still loading
     @Published private(set) var loadingDays: Set<Date> = []
     @Published private(set) var focusEvent: ScheduleFocusEvent?
-    @Published private(set) var userTimezone: String?
+    @Published private(set) var userTimezone: String? = UserTimeZone.savedIdentifier
     @Published var agentAction: AgentAction?
     @Published var scrollTarget: ScheduleScrollTarget?
     @Published var isConfirmingAction: Bool = false
@@ -148,7 +148,7 @@ final class AgentViewModel: ObservableObject {
     private var firstVisibleDate: Date?
     private let calendarService: CalendarServicing
     private let showScheduleHandler: ShowScheduleActionHandling
-    private let calendar: Foundation.Calendar = Foundation.Calendar.autoupdatingCurrent
+    private var calendar: Foundation.Calendar { UserTimeZone.calendar }
     private var liveTranscriptCancellable: AnyCancellable?
 
     init(
@@ -169,7 +169,7 @@ final class AgentViewModel: ObservableObject {
         self.useOnDeviceSpeechRecognition = useOnDeviceSpeechRecognition
         self.calendarService = calendarService ?? CalendarService()
         self.showScheduleHandler = showScheduleHandler ?? ShowScheduleActionHandler()
-        self.scheduleDate = calendar.startOfDay(for: initialScheduleDate)
+        self.scheduleDate = UserTimeZone.calendar.startOfDay(for: initialScheduleDate)
         self.displayEvents = initialDisplayEvents ?? []
         self.hasLoadedSchedule = !(initialDisplayEvents?.isEmpty ?? true)
 
@@ -204,8 +204,11 @@ final class AgentViewModel: ObservableObject {
     func fetchUserTimezone() async {
         let timezone = await AuthTokenProvider.shared.fetchUserTimezone()
         await MainActor.run {
-            self.userTimezone = timezone
-            self.snapshotStore.timeZone = timezone.flatMap(TimeZone.init(identifier:)) ?? .autoupdatingCurrent
+            // Keep the remembered timezone if the fetch fails
+            if let timezone {
+                self.userTimezone = timezone
+            }
+            self.snapshotStore.timeZone = UserTimeZone.current
         }
     }
     
@@ -499,6 +502,7 @@ final class AgentViewModel: ObservableObject {
                 let formatter = DateFormatter()
                 formatter.dateStyle = .medium
                 formatter.timeStyle = .short
+                formatter.timeZone = calendar.timeZone
                 return formatter.string(from: date)
             }
             return stringValue
@@ -518,6 +522,7 @@ final class AgentViewModel: ObservableObject {
                     let formatter = DateFormatter()
                     formatter.dateStyle = .medium
                     formatter.timeStyle = .none  // No time for all-day events
+                    formatter.timeZone = calendar.timeZone
                     return formatter.string(from: date)
                 }
             }
@@ -527,6 +532,7 @@ final class AgentViewModel: ObservableObject {
                 let formatter = DateFormatter()
                 formatter.dateStyle = .medium
                 formatter.timeStyle = .short
+                formatter.timeZone = calendar.timeZone
                 return formatter.string(from: date)
             }
             // For other nested dicts, show key-value pairs inline
@@ -549,6 +555,7 @@ final class AgentViewModel: ObservableObject {
                 let formatter = DateFormatter()
                 formatter.dateStyle = .medium
                 formatter.timeStyle = .short
+                formatter.timeZone = calendar.timeZone
                 return formatter.string(from: date)
             }
             return stringValue
@@ -577,6 +584,7 @@ final class AgentViewModel: ObservableObject {
         ]
         
         let dateFormatter = DateFormatter()
+        dateFormatter.timeZone = calendar.timeZone
         for format in dateFormats {
             dateFormatter.dateFormat = format
             if let date = dateFormatter.date(from: string) {
