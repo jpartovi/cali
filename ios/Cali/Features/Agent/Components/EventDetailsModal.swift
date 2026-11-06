@@ -24,8 +24,8 @@ struct EventDetailsModal: View {
             Spacer()
                 .frame(width: horizontalPadding)
             
-            ZStack {
-                // Content layer
+            // Hug the details, up to the cap; a max-height frame would grow every card to the cap
+            HeightCap(maxHeight: maxHeight) {
                 VStack(alignment: .leading, spacing: 0) {
                     // Header with title
                     VStack(alignment: .leading, spacing: 2) {
@@ -61,7 +61,7 @@ struct EventDetailsModal: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: maxHeight)
+            .frame(maxWidth: .infinity)
             .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cornerRadius))
             .shadow(
                 color: Color.black.opacity(0.1),
@@ -266,7 +266,7 @@ struct EventDetailsModal: View {
     @ViewBuilder
     private func attendeeRow(attendee: CalendarEvent.Attendee, change: AttendeeChange? = nil) -> some View {
         HStack(spacing: 6) {
-            Text(contactDirectory.name(for: attendee.email) ?? attendee.email ?? attendee.displayName ?? "Unknown")
+            Text(contactDirectory.name(for: attendee.email) ?? attendee.displayName ?? attendee.email ?? "Unknown")
                 .font(.system(size: 13, weight: change == .added ? .semibold : .regular))
                 .strikethrough(change == .removed, color: ColorPalette.Text.secondary)
                 .foregroundColor(
@@ -403,6 +403,24 @@ struct EventDetailsModal: View {
         return formatter.string(from: date)
     }
     
+}
+
+/// Offers its content at most `maxHeight` and takes the content's own size, so short content stays short
+private struct HeightCap: Layout {
+    let maxHeight: CGFloat?
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(capped(proposal)) ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(bounds.size))
+    }
+
+    private func capped(_ proposal: ProposedViewSize) -> ProposedViewSize {
+        guard let maxHeight else { return proposal }
+        return ProposedViewSize(width: proposal.width, height: min(proposal.height ?? maxHeight, maxHeight))
+    }
 }
 
 #Preview {
