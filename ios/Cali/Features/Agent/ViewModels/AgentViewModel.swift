@@ -7,7 +7,6 @@
 
 import Combine
 import Foundation
-import Speech
 
 @MainActor
 final class AgentViewModel: ObservableObject {
@@ -138,11 +137,8 @@ final class AgentViewModel: ObservableObject {
     var numberOfDays: Int = 3
 
     private weak var authProvider: AuthSessionProviding?
-    private let recorder: AgentAudioRecorder
     private let service: AgentActionServicing
-    private let transcriptionService: TranscriptionServicing
-    private let speechRecognitionService: SpeechRecognitionServicing
-    private let useOnDeviceSpeechRecognition: Bool
+    private let dictationService: DictationService
     private let snapshotStore = SnapshotScheduleStore()
     private var hasStartedLiveSchedule = false
     private var firstVisibleDate: Date?
@@ -152,39 +148,28 @@ final class AgentViewModel: ObservableObject {
     private var liveTranscriptCancellable: AnyCancellable?
 
     init(
-        recorder: AgentAudioRecorder? = nil,
         service: AgentActionServicing? = nil,
-        transcriptionService: TranscriptionServicing? = nil,
-        speechRecognitionService: SpeechRecognitionServicing? = nil,
-        useOnDeviceSpeechRecognition: Bool = true,
+        dictationService: DictationService? = nil,
         calendarService: CalendarServicing? = nil,
         showScheduleHandler: ShowScheduleActionHandling? = nil,
         initialScheduleDate: Date = Date(),
         initialDisplayEvents: [DisplayEvent]? = nil
     ) {
-        self.recorder = recorder ?? AgentAudioRecorder()
         self.service = service ?? AgentActionService()
-        self.transcriptionService = transcriptionService ?? TranscriptionService()
-        self.speechRecognitionService = speechRecognitionService ?? SpeechRecognitionService()
-        self.useOnDeviceSpeechRecognition = useOnDeviceSpeechRecognition
+        self.dictationService = dictationService ?? DictationProvider.configured.makeService()
         self.calendarService = calendarService ?? CalendarService()
         self.showScheduleHandler = showScheduleHandler ?? ShowScheduleActionHandler()
         self.scheduleDate = UserTimeZone.calendar.startOfDay(for: initialScheduleDate)
         self.displayEvents = initialDisplayEvents ?? []
         self.hasLoadedSchedule = !(initialDisplayEvents?.isEmpty ?? true)
 
-        // Pre-warm the appropriate audio service
-        if useOnDeviceSpeechRecognition {
-            self.speechRecognitionService.prewarm()
-            // Subscribe to partial transcripts for live UI updates
-            self.liveTranscriptCancellable = self.speechRecognitionService.partialTranscriptPublisher
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] text in
-                    self?.liveTranscript = text
-                }
-        } else {
-            self.recorder.prewarm()
-        }
+        self.dictationService.prewarm()
+        // Subscribe to partial transcripts for live UI updates
+        self.liveTranscriptCancellable = self.dictationService.partialTranscriptPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] text in
+                self?.liveTranscript = text
+            }
     }
 
     func configure(authProvider: AuthSessionProviding) {
@@ -213,11 +198,7 @@ final class AgentViewModel: ObservableObject {
     }
     
     func cleanupAudioSession() {
-        if useOnDeviceSpeechRecognition {
-            speechRecognitionService.cleanup()
-        } else {
-            recorder.cleanup()
-        }
+        dictationService.cleanup()
     }
 
     func startRecording() {
@@ -234,11 +215,7 @@ final class AgentViewModel: ObservableObject {
 
         Task { @MainActor in
             do {
-                if useOnDeviceSpeechRecognition {
-                    try await speechRecognitionService.startRecording()
-                } else {
-                    try await recorder.startRecording()
-                }
+                try await dictationService.startRecording()
             } catch {
                 // Recording errors are not agent/calendar action errors, use generic handler
                 handle(error: error)
@@ -254,51 +231,21 @@ final class AgentViewModel: ObservableObject {
 
         Task { @MainActor in
             do {
-                let transcribedText: String
-
-                if useOnDeviceSpeechRecognition {
-                    // On-device path: transcription happened in real-time, just finalize
-                    let stopStart = Date()
-                    guard let transcript = try await speechRecognitionService.stopRecording(),
-                          !transcript.isEmpty else {
-                        displayState = .idle
-                        liveTranscript = ""
-                        return
-                    }
-                    let stopDuration = Date().timeIntervalSince(stopStart)
-                    await timingLogger.logStep("frontend.stop_and_transcribe_on_device", duration: stopDuration, details: "text_length=\(transcript.count) chars")
-
-                    transcribedText = transcript
-                    transcriptionText = transcribedText
+                // Dictation transcribes live; stopping just collects the final text
+                let stopStart = Date()
+                guard let transcribedText = try await dictationService.stopRecording(),
+                      !transcribedText.isEmpty else {
+                    displayState = .idle
                     liveTranscript = ""
-                    displayState = .uploading
-                    print("Transcribed (on-device): \"\(transcribedText)\"")
-                } else {
-                    // Backend path: stop recorder → upload WAV → Deepgram → get text
-                    let stopStart = Date()
-                    guard let recording = try await recorder.stopRecording() else {
-                        displayState = .idle
-                        return
-                    }
-                    let stopDuration = Date().timeIntervalSince(stopStart)
-                    await timingLogger.logStep("frontend.stop_recording", duration: stopDuration)
-                    defer { try? FileManager.default.removeItem(at: recording.fileURL) }
-
-                    let startingToken = try await resolveAccessToken(initial: accessToken)
-                    displayState = .uploading
-
-                    let transcribeStart = Date()
-                    let transcriptionResult = try await transcribeAudio(
-                        recording: recording,
-                        accessToken: startingToken
-                    )
-                    let transcribeDuration = Date().timeIntervalSince(transcribeStart)
-                    await timingLogger.logStep("frontend.transcribe_audio", duration: transcribeDuration, details: "text_length=\(transcriptionResult.text.count) chars")
-
-                    transcribedText = transcriptionResult.text
-                    transcriptionText = transcribedText
-                    print("Transcribed: \"\(transcribedText)\"")
+                    return
                 }
+                let stopDuration = Date().timeIntervalSince(stopStart)
+                await timingLogger.logStep("frontend.stop_dictation", duration: stopDuration, details: "provider=\(DictationProvider.configured.rawValue) text_length=\(transcribedText.count) chars")
+
+                transcriptionText = transcribedText
+                liveTranscript = ""
+                displayState = .uploading
+                print("Transcribed: \"\(transcribedText)\"")
 
                 try await runAgentQuery(transcribedText, accessToken: accessToken, flowStart: flowStart)
             } catch {
@@ -692,15 +639,8 @@ final class AgentViewModel: ObservableObject {
 
     private func localizedMessage(for error: Error) -> String {
         switch error {
-        case let error as AgentAudioRecorder.RecordingError:
-            switch error {
-            case .permissionDenied:
-                return "Microphone access denied. Enable in Settings."
-            case .noAudioCaptured:
-                return "No audio captured. Try again."
-            case .failedToCreateRecorder:
-                return "Could not start microphone."
-            }
+        case let error as DictationError:
+            return error.userFacingMessage
         case let error as ServerError:
             return "Request failed (\(error.statusCode)): \(error.message)"
         case let error as GoogleCalendarScheduleServiceError:
@@ -922,37 +862,6 @@ final class AgentViewModel: ObservableObject {
         throw AccessTokenError.missingAuthProvider
     }
 
-    private func transcribeAudio(
-        recording: AgentAudioRecorder.Recording,
-        accessToken: String
-    ) async throws -> TranscriptionResult {
-        let request = TranscriptionRequest(fileURL: recording.fileURL)
-        
-        let networkStart = Date()
-        do {
-            let result = try await transcriptionService.transcribe(
-                request: request,
-                accessToken: accessToken
-            )
-            let networkDuration = Date().timeIntervalSince(networkStart)
-            await timingLogger.logStep("frontend.transcribe_audio.network", duration: networkDuration)
-            return result
-        } catch let error as ServerError where error.statusCode == 401 {
-            // Token expired - refresh and retry once
-            guard let refreshedToken = await AuthTokenProvider.shared.currentAccessToken() else {
-                throw AccessTokenError.missingAuthProvider
-            }
-            let retryStart = Date()
-            let result = try await transcriptionService.transcribe(
-                request: request,
-                accessToken: refreshedToken
-            )
-            let retryDuration = Date().timeIntervalSince(retryStart)
-            await timingLogger.logStep("frontend.transcribe_audio.network_retry", duration: retryDuration)
-            return result
-        }
-    }
-    
     private func sendToAgent(
         query: String,
         followUpOf: String?,

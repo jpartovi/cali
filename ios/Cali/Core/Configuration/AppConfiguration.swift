@@ -78,6 +78,11 @@ enum AppConfiguration {
     /// Base URL for calling the Cali agent endpoint.
     static var agentBaseURL: URL { backendURL }
     
+    /// Dictation engine override ("apple", "deepgram" or "openai"); see DictationProvider for the default.
+    static var dictationProvider: String? {
+        stringValue(infoKey: "DictationProvider", envKey: "DICTATION_PROVIDER")
+    }
+
     /// Supabase project URL (anon client). Must be in the binary, not only the Xcode scheme.
     static var supabaseURL: String {
         stringValue(infoKey: "SupabaseURL", envKey: "SUPABASE_URL")

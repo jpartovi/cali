@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     # Deepgram transcription configuration
     deepgram_api_key: str | None = None
 
+    # OpenAI live dictation (the app streams to OpenAI's Realtime API with a short-lived key)
+    openai_api_key: str | None = None
+    openai_transcription_model: str = "gpt-live-transcribe"
+
     # TypeSafe Jev (classifies agent requests; picks the event a request means in /agent/calendars/find)
     typesafe_api_key: str | None = None
     typesafe_model: str = "jev-latest"
