@@ -18,28 +18,6 @@ struct AgentActionRequest {
     }
 }
 
-struct TranscriptionRequest {
-    let fileURL: URL
-    
-    init(fileURL: URL) {
-        self.fileURL = fileURL
-    }
-    
-    var filename: String {
-        let name = fileURL.lastPathComponent
-        return name.isEmpty ? "recording.wav" : name
-    }
-}
-
-struct TranscriptionResponse: Codable {
-    let text: String
-}
-
-struct TranscriptionResult {
-    let statusCode: Int
-    let text: String
-}
-
 struct AgentActionResult {
     let statusCode: Int
     let data: Data

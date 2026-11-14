@@ -28,6 +28,7 @@ from core.dependencies import get_current_user, get_user_timezone
 from core.config import get_settings
 from core.timing_logger import log_step, log_start
 from domains.transcription.service import TranscriptionService
+from domains.transcription.streaming import STREAMING_PROVIDERS
 from services import agent_calendar_service, agent_conversations
 from services.agent_runner import RECURSION_LIMIT, run_agent
 
@@ -320,6 +321,28 @@ class AgentActionRequest(BaseModel):
 
 # Responses the user still has to accept, which a follow-up can change
 PROPOSAL_TYPES = ("create-event", "update-event", "delete-event")
+
+
+@router.post("/transcription/{provider}/token")
+async def transcription_token(
+    provider: str,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+):
+    """
+    Short-lived token the app uses to stream dictation straight to a speech-to-text
+    provider (see domains/transcription/streaming.py), so API keys stay on the server.
+    """
+    mint = STREAMING_PROVIDERS.get(provider)
+    if mint is None:
+        raise HTTPException(status_code=404, detail=f"Unknown dictation provider: {provider}")
+    try:
+        return await mint()
+    except Exception as e:
+        logger.error(
+            f"Dictation token failed provider={provider} user_id={current_user.id}: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(status_code=503, detail="Dictation is unavailable right now.")
 
 
 @router.post("/transcribe")
